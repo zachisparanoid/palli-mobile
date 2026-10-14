@@ -1,10 +1,13 @@
 package com.palli.mobile.data.session
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -12,6 +15,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.IOException
 
 class SessionStoreTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -116,5 +120,26 @@ class SessionStoreTest {
         assertEquals(session, second.sessions().load())
         assertNull(again.unpairedReason.value)
         second.end()
+    }
+
+    @Test fun `a lost key that cannot even be written down still opens unpaired, and never throws`() = runTest {
+        val file = tmp.newFile("full.preferences_pb")
+        val first = Run(file)
+        first.prefs.write("http://h:8000", 1, "Phone", "garbage")
+        first.end()
+
+        // The next start, on a full disk: reading works, every write fails.
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val real = ServerPrefs.store(scope) { file }
+        val fullDisk = object : DataStore<Preferences> {
+            override val data: Flow<Preferences> = real.data
+            override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+                throw IOException("No space left on device")
+        }
+        val sessions = SessionStore(ServerPrefs(fullDisk), FakeCipher())
+
+        assertNull(sessions.load())
+        assertEquals(SessionStore.KEY_LOST, sessions.unpairedReason.value)    // said for this run, if not kept
+        scope.coroutineContext[Job]!!.cancelAndJoin()
     }
 }

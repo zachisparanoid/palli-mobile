@@ -1,5 +1,7 @@
 package com.palli.mobile.data.session
 
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +37,15 @@ class SessionStore @Inject constructor(private val prefs: ServerPrefs, private v
             Session(stored.baseUrl, token, stored.deviceId, stored.deviceName.orEmpty()) else null
         var reason = stored.unpairedReason
         if (stored.tokenBlob != null && token == null && reason != KEY_LOST) {
-            prefs.setUnpairedReason(KEY_LOST)
+            // Advisory: a write that fails (a full disk) must not throw out of load(), which runs at every start on a
+            // scope with no handler. The reason is still said for this run.
+            try {
+                prefs.setUnpairedReason(KEY_LOST)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "the reason could not be written down: ${e.javaClass.simpleName}")
+            }
             reason = KEY_LOST
         }
         _unpairedReason.value = if (session == null) reason else null
@@ -58,5 +68,6 @@ class SessionStore @Inject constructor(private val prefs: ServerPrefs, private v
 
     companion object {
         const val KEY_LOST = "This phone's key was lost; pair again."
+        private const val TAG = "SessionStore"
     }
 }

@@ -71,19 +71,42 @@ class KeystoreTokenCipherTest {
         blobs.forEachIndexed { i, blob -> assertEquals("pmd_${i + 1}", cipher.decrypt(blob)) }
     }
 
-    @Test fun `a key that cannot be read is deleted and made again, so the phone can pair again`() {
+    @Test fun `a key that cannot be read when unsealing is left where it is, and reads again once the error passes`() {
+        for (failure in listOf(UnrecoverableKeyException("busy"), UnrecoverableEntryException("busy"), KeyStoreException("binder"))) {
+            val vault = FakeVault()
+            val cipher = KeystoreTokenCipher(vault)
+            val blob = cipher.encrypt("pmd_test")
+            val key = vault.key
+            vault.breakWith = failure                              // Android 12+ can say this for a passing system error
+
+            assertTrue(failure.javaClass.simpleName, runCatching { cipher.decrypt(blob) }.isFailure)
+            assertEquals(0, vault.deleted.get())                   // nothing is deleted on the way in
+            assertEquals(1, vault.made.get())
+            assertTrue(vault.key === key)
+
+            vault.breakWith = null                                 // the next start
+            assertEquals("pmd_test", cipher.decrypt(blob))
+        }
+    }
+
+    @Test fun `a key that cannot be read when sealing, a new pairing, is deleted and made again, so the phone pairs`() {
         for (failure in listOf(UnrecoverableKeyException("gone"), UnrecoverableEntryException("gone"), KeyStoreException("gone"))) {
             val vault = FakeVault()
             val cipher = KeystoreTokenCipher(vault)
-            val old = cipher.encrypt("pmd_old")
-            vault.breakWith = failure                              // the entry is there but will not be read
+            cipher.encrypt("pmd_old")
+            vault.breakWith = failure
 
-            val unsealed = runCatching { cipher.decrypt(old) }
-            assertTrue("${failure.javaClass.simpleName}: the old token cannot be read under a new key", unsealed.isFailure)
+            val sealed = cipher.encrypt("pmd_new")                 // pairing again overwrites the old blob anyway
             assertEquals(1, vault.deleted.get())
             assertEquals(2, vault.made.get())
-            assertEquals("pmd_new", cipher.decrypt(cipher.encrypt("pmd_new")))     // and a new pairing seals and unseals
+            assertEquals("pmd_new", cipher.decrypt(sealed))
         }
+    }
+
+    @Test fun `with no key at all, unsealing makes none`() {
+        val vault = FakeVault()
+        assertTrue(runCatching { KeystoreTokenCipher(vault).decrypt("AAAAAAAAAAAAAAAA:AAAA") }.isFailure)
+        assertEquals(0, vault.made.get())
     }
 
     @Test fun `a lost key opens to Pair saying so, and a new pairing works`() = runTest {

@@ -33,20 +33,23 @@ class KeystoreTokenCipher internal constructor(private val vault: KeyVault) : To
      * The key, made on first use. One caller at a time: two first callers must not each make one, since the second
      * replaces the first under the alias and a token sealed under the first would never unseal.
      *
-     * A key that is there but cannot be read (Android may drop it: a Keystore reset, a lock-screen change on some phones)
-     * is deleted and made again. Whatever it sealed is unreadable either way; this way the phone can pair again, and
-     * SessionStore.load says the key was lost. Kept, it would refuse every pairing until the app's data was cleared.
+     * A key that is there but cannot be read (Android may drop it: a Keystore reset, a lock-screen change on some phones;
+     * but on Android 12+ a passing system or binder error reads the same) is deleted and made again only when [sealing]:
+     * that is a new pairing, whose token replaces the old blob anyway, and kept, the unreadable key would refuse every
+     * pairing until the app's data was cleared. When unsealing the failure stands, and nothing is deleted or made:
+     * SessionStore.load says the key was lost; a real loss is mended by pairing again, and a passing error is gone at the
+     * next start.
      */
     @Synchronized
-    private fun key(): SecretKey {
+    private fun key(sealing: Boolean): SecretKey {
         val stored = try {
             vault.stored()
         } catch (e: UnrecoverableEntryException) {          // UnrecoverableKeyException is one
-            forget(e)
+            if (sealing) forget(e) else throw e
         } catch (e: KeyStoreException) {
-            forget(e)
+            if (sealing) forget(e) else throw e
         }
-        return stored ?: vault.generate()
+        return stored ?: if (sealing) vault.generate() else throw KeyStoreException("no key to unseal with")
     }
 
     private fun forget(e: Exception): SecretKey? {
@@ -60,7 +63,7 @@ class KeystoreTokenCipher internal constructor(private val vault: KeyVault) : To
     }
 
     override fun encrypt(plain: String): String {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key(sealing = true)) }
         val sealed = cipher.doFinal(plain.toByteArray(Charsets.UTF_8))
         return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(sealed, Base64.NO_WRAP)
     }
@@ -68,7 +71,7 @@ class KeystoreTokenCipher internal constructor(private val vault: KeyVault) : To
     override fun decrypt(blob: String): String {
         val (iv, sealed) = blob.split(":", limit = 2).map { Base64.decode(it, Base64.NO_WRAP) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-            init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
+            init(Cipher.DECRYPT_MODE, key(sealing = false), GCMParameterSpec(128, iv))
         }
         return String(cipher.doFinal(sealed), Charsets.UTF_8)
     }
