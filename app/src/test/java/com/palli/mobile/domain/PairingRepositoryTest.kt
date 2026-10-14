@@ -34,12 +34,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import okio.buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -154,7 +156,7 @@ class PairingRepositoryTest {
         assertWiped("This phone was unpaired.")
     }
 
-    @Test fun `unpairing by choice stops the queue before telling her, then wipes with no reason`() = runTest {
+    @Test fun `unpairing by choice stops the queue before telling her, then wipes with no reason`() = runBlocking {
         var queueAtRevoke: List<WorkInfo.State>? = null
         val requests = mutableListOf<RecordedRequest>()
         server.dispatcher = object : Dispatcher() {
@@ -174,7 +176,7 @@ class PairingRepositoryTest {
         assertWiped(null)
     }
 
-    @Test fun `she being unreachable does not stop him unpairing`() = runTest {
+    @Test fun `she being unreachable does not stop him unpairing`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(500).setBody("""{"detail":"boom"}"""))
         repo.unpairThisPhone()
         assertTrue(server.requestCount == 1)
@@ -187,7 +189,7 @@ class PairingRepositoryTest {
         assertHerFilesGone()
     }
 
-    @Test fun `a pairing he ends takes her cached files and pictures with it`() = runTest {
+    @Test fun `a pairing he ends takes her cached files and pictures with it`() = runBlocking {
         assertTrue(herFolder.exists())
         server.enqueue(MockResponse().setBody("""{"ok":true}"""))
         repo.unpairThisPhone()
@@ -225,5 +227,61 @@ class PairingRepositoryTest {
         unpairing.join()
 
         assertWiped(null)                                    // still whole: the queue is stopped and the session gone
+    }
+
+    // ---- the order of the wipe, and the new pairing ----
+
+    private class TheEnd : Error("the process died here")
+
+    @Test fun `her files are cleared before the session is, because the session is what says the pairing is over`() = runTest {
+        var sessionWhileClearing: Session? = null
+        repoClearingWith { sessionWhileClearing = sessions.current }.unpaired("This phone was unpaired.")
+
+        assertNotNull("the session must still be there when her files go", sessionWhileClearing)
+        assertNull(sessions.current)                          // and gone after
+    }
+
+    @Test fun `a death between her files and the session leaves the phone paired, so the wipe is run again`() = runTest {
+        val died = runCatching { repoClearingWith { throw TheEnd() }.unpaired("This phone was unpaired.") }.exceptionOrNull()
+
+        assertTrue(died is TheEnd)
+        assertNotNull(sessions.current)                       // still paired: the server will say 401 / 4401 again, or he unpairs again
+        assertNotNull(prefs.read().tokenBlob)
+        assertEquals(listOf(WorkInfo.State.ENQUEUED), sendWorkStates())
+
+        repo.unpaired("This phone was unpaired.")             // the next start: the wipe runs whole
+        assertWiped("This phone was unpaired.")
+    }
+
+    private val pairedAnswer = """{"token":"pmd_new","device_id":2,"api_version":1}"""
+
+    @Test fun `a new pairing never serves a file cached under an old one`() = runTest {
+        // Her file ids repeat from one PaLLi to the next, and the cached copy is named by id alone.
+        sessions.clear()                                       // as an unpair that died before the wipe left things
+        server.enqueue(MockResponse().setBody(pairedAnswer))
+        repo.pair(server.url("/").toString().trimEnd('/'), "K7QM-2XPA", "Phone").getOrThrow()
+
+        assertHerFilesGone()
+        assertEquals("pmd_new", sessions.current!!.token)
+    }
+
+    @Test fun `a pairing she refuses leaves things as they were`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(410).setBody("""{"detail":"expired"}"""))
+        assertTrue(repo.pair(server.url("/").toString().trimEnd('/'), "K7QM-2XPA", "Phone").isFailure)
+
+        assertTrue(herFolder.exists())
+        assertEquals("pmd_test", sessions.current!!.token)
+    }
+
+    // ---- a server that never answers ----
+
+    @Test fun `a server that never answers cannot hold unpairing for more than eight seconds`() = runTest {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val started = testScheduler.currentTime
+
+        repo.unpairThisPhone()
+
+        assertEquals("the revoke gave up at its bound", 8_000L, testScheduler.currentTime - started)
+        assertWiped(null)                                      // and the local wipe was whole, queue and files and token
     }
 }
