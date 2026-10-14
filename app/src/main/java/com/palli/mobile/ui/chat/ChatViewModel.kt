@@ -200,10 +200,15 @@ class ChatViewModel(
         if (text.isNotBlank() && throttle.shouldSend(clock())) sendTyping()
     }
 
+    /** Words past what PaLLi takes in one message ([SendLimits.MAX_TEXT_BYTES]) stay in the box, and it is said. */
     fun send() {
         if (blocked) return
         val text = _draft.value.trim()
         if (text.isEmpty()) return
+        if (!SendLimits.fitsText(text)) {
+            tell(TEXT_TOO_LONG)
+            return
+        }
         _draft.value = ""
         viewModelScope.launch { queue(text, clientId = null, Sent.WORDS) { enqueue(text) } }
     }
@@ -215,13 +220,18 @@ class ChatViewModel(
      *
      * PaLLi takes at most 20 MB a file and 60 MB a send ([SendLimits]). Past either, nothing is sent, the words go back
      * and it is said: refused before any copy when the picker says the sizes, and when it does not (or says wrong), as
-     * soon as a copy runs past them.
+     * soon as a copy runs past them. Words past what she takes in one message refuse the send before anything is
+     * opened, and stay in the box.
      */
     fun sendPicked(uris: List<Uri>, kind: String) {
         if (blocked || uris.isEmpty()) return
         val context = context ?: return
         val outgoing = outgoing ?: return
         val text = _draft.value.trim()
+        if (!SendLimits.fitsText(text)) {
+            tell(WORDS_TOO_LONG)
+            return
+        }
         _draft.value = ""
         viewModelScope.launch(io) {
             // Once picked, the send is either queued or undone, even if the chat closes meanwhile.
@@ -606,6 +616,8 @@ class ChatViewModel(
         const val PART_TOO_BIG = "That file is over 20 MB — too big to send."
         const val SEND_TOO_BIG = "Those come to over 60 MB together — too big to send at once."
         const val PHOTO_TOO_BIG = "That photo is over 20 MB — too big to send."
+        const val TEXT_TOO_LONG = "That's too long to send as a message — send it as a file instead."
+        const val WORDS_TOO_LONG = "The words in the box are too long to send as a message, so nothing was sent — send them as a file instead."
         const val SOME_UNREADABLE = "Some of what you picked couldn't be opened, so it was left out."
         const val MIC_FAILED = "Couldn't start the microphone."
         const val HOLD_TO_RECORD = "Hold the microphone down while you talk, then let go to send."

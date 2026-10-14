@@ -30,10 +30,15 @@ class SendProcessor @Inject constructor(
             pending.setState(clientId, SendStates.FAILED, "A file for this message is gone from the phone.")
             return Outcome.DONE
         }
-        // The chat refuses these before queueing them; this holds for anything else. PaLLi would refuse it for good, and
-        // past 60 MB her early 413 can reach the phone as a broken pipe, which would otherwise be retried for ever.
+        // The chat refuses these before queueing them; this holds for anything else (a row an older build wrote, the
+        // notification's Reply). PaLLi would refuse it for good, and past 60 MB her early 413 can reach the phone as a
+        // broken pipe, which would otherwise be retried for ever.
         if (!SendLimits.fits(send.attachments().map { File(it.path).length() })) {
             pending.setState(clientId, SendStates.FAILED, TOO_BIG)
+            return Outcome.DONE
+        }
+        if (!SendLimits.fitsText(send.text)) {
+            pending.setState(clientId, SendStates.FAILED, TEXT_TOO_LONG)
             return Outcome.DONE
         }
         pending.setState(clientId, SendStates.SENDING, null)
@@ -51,6 +56,7 @@ class SendProcessor @Inject constructor(
 
     companion object {
         const val TOO_BIG = "Too big to send: over 20 MB for one file, or 60 MB in all."
+        const val TEXT_TOO_LONG = "Too long to send as a message: over 64 KB of words."
 
         fun buildParts(send: PendingSendEntity): List<MultipartBody.Part> = buildList {
             add(MultipartBody.Part.createFormData("client_id", send.clientId))

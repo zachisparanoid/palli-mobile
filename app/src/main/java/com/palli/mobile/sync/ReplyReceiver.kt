@@ -6,6 +6,7 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.app.RemoteInput
 import com.palli.mobile.domain.SendGate
+import com.palli.mobile.domain.SendLimits
 import com.palli.mobile.domain.SendRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CancellationException
@@ -37,12 +38,14 @@ class ReplyReceiver : BroadcastReceiver() {
     companion object {
         const val BLOCKED = "PaLLi and this app speak different versions. Update the older one, then reply."
         const val FAILED = "Couldn't send your reply. Open PaLLi and send it from there."
+        const val TOO_LONG = "That's too long to send as a reply. Open PaLLi and send it as a file."
         private const val TAG = "ReplyReceiver"
 
         /**
-         * Queues [text] unless [gate] is blocked, then updates the conversation: the reply itself when it is on its way,
-         * one plain line when it is not. Either update also stops the reply button's spinner. It throws nothing but a
-         * cancellation: the receiver's coroutine has no handler, and an escaped exception would take the app down.
+         * Queues [text] unless [gate] is blocked or it is more than PaLLi takes in one message, then updates the
+         * conversation: the reply itself when it is on its way, one plain line when it is not. Either update also stops
+         * the reply button's spinner. It throws nothing but a cancellation: the receiver's coroutine has no handler, and an
+         * escaped exception would take the app down.
          */
         suspend fun reply(
             text: String,
@@ -53,6 +56,10 @@ class ReplyReceiver : BroadcastReceiver() {
         ) {
             if (gate.isBlocked()) {
                 say { notSent(BLOCKED) }
+                return
+            }
+            if (!SendLimits.fitsText(text)) {
+                say { notSent(TOO_LONG) }
                 return
             }
             val queued = try {

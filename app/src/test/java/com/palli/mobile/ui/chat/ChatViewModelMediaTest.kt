@@ -234,6 +234,23 @@ class ChatViewModelMediaTest {
         assertNull(vm.notice.value)
     }
 
+    @Test fun `picked files go with 65,536 bytes of words, and with 65,537 nothing is copied or sent and the words stay`() {
+        val vm = viewModel()
+        vm.onDraft("a".repeat(65_536))
+        vm.sendPicked(listOf(picked("1", "cat.png", "image/png", byteArrayOf(1))), "image")
+        assertEquals("a".repeat(65_536), queued.single().text)
+
+        val over = "中".repeat(21_846)                             // 65,538 bytes, though only 21,846 characters
+        vm.onDraft(over)
+        val openedBefore = picker.opened
+        vm.sendPicked(listOf(picked("2", "dog.png", "image/png", byteArrayOf(2))), "image")
+        assertEquals(1, queued.size)
+        assertEquals(openedBefore, picker.opened)                  // not even opened
+        assertTrue(folder("c-2").listFiles().isNullOrEmpty())
+        assertEquals(over, vm.draft.value)
+        assertEquals(ChatViewModel.WORDS_TOO_LONG, vm.notice.value)
+    }
+
     @Test fun `a picked document is a file, named as the picker names it, and its type taken from the picker`() {
         val bill = picked("3", "Bill March.pdf", "application/pdf", "%PDF".toByteArray())
         viewModel().sendPicked(listOf(bill), "file")

@@ -148,6 +148,30 @@ class ChatViewModelTest {
         assertEquals("", vm.draft.value)
     }
 
+    @Test fun `words of 65,536 bytes go, and 65,537 stay in the box and say to send them as a file`() {
+        val vm = viewModel()
+        vm.onDraft("a".repeat(65_536))
+        vm.send()
+        assertEquals(listOf("a".repeat(65_536)), queued)
+        assertEquals("", vm.draft.value)
+
+        vm.onDraft("a".repeat(65_537))
+        vm.send()
+        assertEquals(1, queued.size)                               // nothing more was queued
+        assertEquals("a".repeat(65_537), vm.draft.value)           // and the words are still there
+        assertEquals(ChatViewModel.TEXT_TOO_LONG, vm.notice.value)
+    }
+
+    @Test fun `the limit is in bytes, so words in another script are refused under 65,536 characters`() {
+        val vm = viewModel()
+        val cjk = "中".repeat(21_846)                              // 65,538 bytes in 21,846 characters
+        vm.onDraft(cjk)
+        vm.send()
+        assertTrue(queued.isEmpty())
+        assertEquals(cjk, vm.draft.value)
+        assertEquals(ChatViewModel.TEXT_TOO_LONG, vm.notice.value)
+    }
+
     @Test fun `a blank draft sends nothing and is left as it is`() {
         val vm = viewModel()
         vm.onDraft("   ")

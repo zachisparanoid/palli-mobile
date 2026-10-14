@@ -46,6 +46,17 @@ class ReplyReceiverTest {
         assertEquals(listOf("on my way"), queued)
     }
 
+    @Test fun `a reply of 65,536 bytes is queued, and one of 65,537 is not sent and says so`() = runTest {
+        reply(text = "a".repeat(65_536))
+        assertEquals(listOf("a".repeat(65_536)), queued)
+
+        reply(text = "a".repeat(65_537))
+        reply(text = "中".repeat(21_846))                          // 65,538 bytes, though only 21,846 characters
+        assertEquals(1, queued.size)
+        assertEquals(1, shown.size)
+        assertEquals(listOf(ReplyReceiver.TOO_LONG, ReplyReceiver.TOO_LONG), notSent)
+    }
+
     @Test fun `a reply the queue would not take does not crash, and the thread says it was not sent`() = runTest {
         reply(enqueue = { throw IllegalStateException("disk full") })
         assertTrue(shown.isEmpty())

@@ -121,6 +121,24 @@ class SendProcessorTest {
         assertEquals(0, server.requestCount)
     }
 
+    @Test fun `words of 65,536 bytes are sent, and over that fail for good without an upload, even from an older build`() = runTest {
+        queue("c-10", "a".repeat(65_536))
+        server.enqueue(MockResponse().setResponseCode(202).setBody("""{"client_id":"c-10"}"""))
+        assertEquals(SendProcessor.Outcome.DONE, processor.process("c-10"))
+        assertEquals(SendStates.ACCEPTED, db.pendingSends().get("c-10")!!.state)
+        assertEquals(1, server.requestCount)
+
+        queue("c-11", "a".repeat(65_537))
+        queue("c-12", "中".repeat(21_846))                          // 65,538 bytes, though only 21,846 characters
+        for (id in listOf("c-11", "c-12")) {
+            assertEquals(SendProcessor.Outcome.DONE, processor.process(id))
+            val failed = db.pendingSends().get(id)!!
+            assertEquals(SendStates.FAILED, failed.state)
+            assertEquals(SendProcessor.TEXT_TOO_LONG, failed.failure)
+        }
+        assertEquals(1, server.requestCount)                       // neither was uploaded
+    }
+
     @Test fun `an empty or invalid message fails for good with the server's sentence`() = runTest {
         queue("c-6", "")
         server.enqueue(MockResponse().setResponseCode(422).setBody("""{"detail":"Say something, or attach something."}"""))
