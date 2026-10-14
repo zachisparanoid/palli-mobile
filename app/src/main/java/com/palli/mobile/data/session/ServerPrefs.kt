@@ -1,14 +1,20 @@
 package com.palli.mobile.data.session
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.preferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -21,6 +27,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,7 +42,10 @@ import javax.inject.Singleton
  */
 @Singleton
 class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>) {
-    data class Stored(val baseUrl: String?, val deviceId: Long?, val deviceName: String?, val tokenBlob: String?)
+    /** [unpairedReason] says why this phone is not paired, when it was not his choice: it outlives the process. */
+    data class Stored(
+        val baseUrl: String?, val deviceId: Long?, val deviceName: String?, val tokenBlob: String?, val unpairedReason: String? = null,
+    )
 
     private object Keys {
         val BASE_URL = stringPreferencesKey("base_url")
@@ -46,6 +56,7 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
         val ASKED_BATTERY = booleanPreferencesKey("asked_battery")
         val ASKED_NOTIFICATIONS = booleanPreferencesKey("asked_notifications")
         val LAST_API_VERSION = intPreferencesKey("last_api_version")
+        val UNPAIRED_REASON = stringPreferencesKey("unpaired_reason")
     }
 
     /** The stored preferences, as last read or written here. Null until the first read. */
@@ -79,22 +90,29 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
     }
 
     suspend fun read(): Stored = snapshot().let {
-        Stored(it[Keys.BASE_URL], it[Keys.DEVICE_ID], it[Keys.DEVICE_NAME], it[Keys.TOKEN_BLOB])
+        Stored(it[Keys.BASE_URL], it[Keys.DEVICE_ID], it[Keys.DEVICE_NAME], it[Keys.TOKEN_BLOB], it[Keys.UNPAIRED_REASON])
     }
 
+    /** A new pairing. Whatever reason the last one ended for is over with it. */
     suspend fun write(baseUrl: String, deviceId: Long, deviceName: String, tokenBlob: String) {
         update {
             it[Keys.BASE_URL] = baseUrl; it[Keys.DEVICE_ID] = deviceId
             it[Keys.DEVICE_NAME] = deviceName; it[Keys.TOKEN_BLOB] = tokenBlob
+            it.remove(Keys.UNPAIRED_REASON)
         }
     }
 
-    suspend fun clearPairing() {
+    /** The pairing is over, and [reason] (null when it was his choice) is why: one write, so the two never disagree. */
+    suspend fun clearPairing(reason: String? = null) {
         update {
             it.remove(Keys.BASE_URL); it.remove(Keys.DEVICE_ID); it.remove(Keys.DEVICE_NAME); it.remove(Keys.TOKEN_BLOB)
             it.remove(Keys.LAST_API_VERSION)           // it was that server's; the next one says its own
+            if (reason != null) it[Keys.UNPAIRED_REASON] = reason else it.remove(Keys.UNPAIRED_REASON)
         }
     }
+
+    /** Why the pairing this phone holds cannot be used (its token will not unseal), for the Pair screen to say. */
+    suspend fun setUnpairedReason(reason: String) { update { it[Keys.UNPAIRED_REASON] = reason } }
 
     /** On by default: the persistent connection is how her messages arrive at once. */
     val stayConnected: Flow<Boolean> = preferences().map { it[Keys.STAY_CONNECTED] ?: true }
@@ -110,4 +128,21 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
     /** The `api_version` the paired PaLLi last reported on `/me`; null before any answer. Read again after a cold start. */
     suspend fun lastApiVersion(): Int? = snapshot()[Keys.LAST_API_VERSION]
     suspend fun setLastApiVersion(version: Int) { update { it[Keys.LAST_API_VERSION] = version } }
+
+    companion object {
+        const val DAMAGED = "This phone's settings were damaged; pair again."
+
+        /**
+         * The store these preferences live in. A file that cannot be read (a damaged proto) is replaced rather than thrown
+         * at every start, which would be a crash loop the owner could only end by clearing the app's data: the phone opens
+         * unpaired, on the Pair screen, and says why. The reason is in the replacement itself, so it is written by the
+         * store's own replacing write — nothing else ever writes the file.
+         */
+        fun store(scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()), file: () -> File): DataStore<Preferences> =
+            PreferenceDataStoreFactory.create(
+                corruptionHandler = ReplaceFileCorruptionHandler { preferencesOf(Keys.UNPAIRED_REASON to DAMAGED) },
+                scope = scope,
+                produceFile = file,
+            )
+    }
 }
