@@ -31,13 +31,16 @@ object PairingLinks {
         return cleaned.takeIf { it.length == 8 && it.all { c -> c in CROCKFORD } }
     }
 
-    /** `http://` added when there is no scheme; trailing slashes dropped; only http(s) with a host. */
+    /**
+     * `http://` added when there is no scheme; only http(s) with a host; trailing slashes dropped.
+     * Validate first, trim last: trimming first would eat the slashes of a half-typed `http://`.
+     */
     fun normalizeBaseUrl(raw: String): String? {
-        var s = raw.trim().trimEnd('/')
+        var s = raw.trim()
         if (s.isEmpty()) return null
         if (!s.contains("://")) s = "http://$s"
         val uri = runCatching { URI(s) }.getOrNull() ?: return null
         if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrEmpty()) return null
-        return s
+        return s.trimEnd('/')
     }
 }

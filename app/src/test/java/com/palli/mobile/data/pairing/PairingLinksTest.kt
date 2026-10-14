@@ -32,5 +32,7 @@ class PairingLinksTest {
         assertEquals("https://builder.ts.net/palli", PairingLinks.normalizeBaseUrl("https://builder.ts.net/palli/"))
         assertNull(PairingLinks.normalizeBaseUrl("ftp://builder"))
         assertNull(PairingLinks.normalizeBaseUrl("   "))
+        assertNull(PairingLinks.normalizeBaseUrl("http://"))       // half-typed: a scheme, no host
+        assertNull(PairingLinks.normalizeBaseUrl("https:///"))
     }
 }
