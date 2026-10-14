@@ -43,6 +43,7 @@ class Notifier @Inject constructor(@ApplicationContext private val context: Cont
         Person.Builder().setName("PaLLi").setIcon(IconCompat.createWithResource(context, R.drawable.palli_macaw)).build()
     }
     private val me by lazy { Person.Builder().setName("You").build() }
+    private val notSent by lazy { Person.Builder().setName("Not sent").build() }
 
     fun createChannels() {
         val system = context.getSystemService(NotificationManager::class.java)
@@ -87,6 +88,18 @@ class Notifier @Inject constructor(@ApplicationContext private val context: Cont
         if (!manager.areNotificationsEnabled()) return
         val style = activeStyle() ?: NotificationCompat.MessagingStyle(me)
         style.addMessage(text, System.currentTimeMillis(), null as Person?)
+        manager.notify(ID_CONVERSATION, conversation(style, alertAgain = false))
+    }
+
+    /**
+     * One plain line in the thread, under "Not sent", when a Reply typed here was not sent. Like [addMyReply], it stops
+     * the reply button's spinner and does not buzz the phone again.
+     */
+    @SuppressLint("MissingPermission")
+    fun addNotSent(line: String) {
+        if (!manager.areNotificationsEnabled()) return
+        val style = activeStyle() ?: NotificationCompat.MessagingStyle(me)
+        style.addMessage(line, System.currentTimeMillis(), notSent)
         manager.notify(ID_CONVERSATION, conversation(style, alertAgain = false))
     }
 

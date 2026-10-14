@@ -1,9 +1,11 @@
 package com.palli.mobile.ui.chat
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -33,20 +35,22 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.palli.mobile.domain.timeline.TimelineItem
 import com.palli.mobile.ui.theme.PalliColors
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
+import java.io.File
 
 /**
  * Insets, under the edge-to-edge window MainActivity sets up: the top bar pads itself below the status bar, and the
@@ -63,6 +67,8 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
     val banner by vm.banner.collectAsStateWithLifecycle()
     val blocked by vm.sendingBlocked.collectAsStateWithLifecycle()
     val notice by vm.notice.collectAsStateWithLifecycle()
+    val recording by vm.recording.collectAsStateWithLifecycle()
+    val media = vm.media
     val newestFirst = remember(items) { items.asReversed() }
     val listState = rememberLazyListState()
 
@@ -79,6 +85,41 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+    // Photos, files, the camera and the microphone. What the system hands back goes to the view model, which refuses it
+    // while sending is blocked. The camera's file is kept by path across a rebuilt activity: the camera app can outlive it.
+    var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val pickPhotos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(5)) { uris ->
+        vm.sendPicked(uris, "image")
+    }
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { vm.sendPicked(listOf(it), "file") }
+    }
+    val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        cameraPath?.let { File(it) }?.let { if (saved) vm.sendCameraPhoto(it) else it.delete() }
+        cameraPath = null
+    }
+    fun launching(launch: () -> Unit) = try { launch() } catch (e: ActivityNotFoundException) { vm.noAppForThat() }
+    fun launchCamera() {
+        val file = vm.newCameraFile() ?: return
+        cameraPath = file.path
+        launching {
+            try {
+                takePicture.launch(FileProvider.getUriForFile(context, "${context.packageName}.files", file))
+            } catch (e: ActivityNotFoundException) {
+                cameraPath = null
+                file.delete()
+                throw e
+            }
+        }
+    }
+    val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) launchCamera() else vm.refused(Manifest.permission.CAMERA)
+    }
+    // A yes takes effect at the next hold of the microphone: this press has already ended.
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) vm.refused(Manifest.permission.RECORD_AUDIO)
+    }
+    fun has(permission: String) = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
     // Scrolling near the oldest bubble pages back through her log.
     LaunchedEffect(listState, newestFirst.size) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
@@ -87,22 +128,24 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
     // A new bubble lands below the viewport (the list keeps the bubble it was showing), so follow it down: always for
     // something you just sent, and for hers or her typing only when you were at the bottom, not reading back.
     //
-    // "Were at the bottom" is read here, in composition, as the new bubbles arrive and before they are laid out: once the
+    // Whether to follow is decided here, in composition, as the new bubbles arrive and before they are laid out: once the
     // list has re-anchored on the bubble it was showing, several bubbles arriving at once (a multi-beat reply, a replay) make
-    // the old bottom look several items away. `follow` carries the decision across a second arrival that comes while the
-    // first is still being followed down.
+    // the old bottom look several items away. A second arrival that comes while the first is still being followed down
+    // (`follow.pending`) is followed too: that is read at the same moment, before the first follow's effect is replaced.
+    // Each follow clears `pending` when it ends, however it ends, so a follow that was replaced mid-way (her typing
+    // stopping, say) never leaves it set for a later bubble to yank the list down with.
     val follow = remember { Follow() }
     val newest = newestFirst.firstOrNull()
     val newestKey = newest?.key
-    val wasAtBottomForBubble = remember(newestKey) { listState.isAtBottom() }
-    val wasAtBottomForTyping = remember(typing) { listState.isAtBottom() }
+    val followBubble = remember(newestKey) { listState.isAtBottom() || follow.pending }
+    val followTyping = remember(typing) { listState.isAtBottom() || follow.pending }
     LaunchedEffect(newestKey) {
         if (newest == null) return@LaunchedEffect
         val justSent = newest is TimelineItem.Mine && newest.key.startsWith("p")
-        if (justSent || wasAtBottomForBubble || follow.pending) listState.followToBottom(follow)
+        if (justSent || followBubble) listState.followToBottom(follow)
     }
     LaunchedEffect(typing) {
-        if (typing && (wasAtBottomForTyping || follow.pending)) listState.followToBottom(follow)
+        if (typing && followTyping) listState.followToBottom(follow)
     }
     // What could not be done is said once, in a line over the composer.
     val snackbars = remember { SnackbarHostState() }
@@ -129,7 +172,22 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = PalliColors.Background),
             )
         },
-        bottomBar = { Composer(draft, vm::onDraft, vm::send, enabled = !blocked) },
+        bottomBar = {
+            Composer(
+                draft = draft, onDraft = vm::onDraft, onSend = vm::send, enabled = !blocked, recording = recording,
+                onPickPhotos = {
+                    launching { pickPhotos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                },
+                onCamera = { if (has(Manifest.permission.CAMERA)) launchCamera() else askCamera.launch(Manifest.permission.CAMERA) },
+                onPickFile = { launching { pickFile.launch(arrayOf("*/*")) } },
+                onRecordStart = {
+                    if (has(Manifest.permission.RECORD_AUDIO)) vm.startRecording()
+                    else askMic.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                onRecordStop = vm::stopRecording,
+                onRecordCancel = vm::cancelRecording,
+            )
+        },
         snackbarHost = {
             SnackbarHost(snackbars) { Snackbar(it, containerColor = PalliColors.Card, contentColor = PalliColors.Text) }
         },
@@ -147,30 +205,37 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
                 contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (typing) item(key = "typing") { TypingBubble() }
-                items(newestFirst, key = { it.key }) { Bubble(it, vm::retry) }
+                items(newestFirst, key = { it.key }) { Bubble(it, vm::retry, media) }
             }
         }
     }
 }
 
-/** Whether the list is being followed down to its newest bubble: set when a bubble is followed, cleared when that finishes. */
-private class Follow { var pending = false }
+/**
+ * Whether the list is being followed down to its newest bubble. Each follow takes a token; only the follow that holds
+ * the current token clears it, so an older follow ending late (its effect replaced) cannot clear a newer one's.
+ */
+private class Follow {
+    private var owner: Any? = null
+    val pending: Boolean get() = owner != null
+    fun begin(): Any = Any().also { owner = it }
+    fun end(token: Any) { if (owner === token) owner = null }
+}
 
 /** At the newest bubble, with none of it scrolled out of view. Read without subscribing, so scrolling does not recompose. */
 private fun LazyListState.isAtBottom(): Boolean =
     Snapshot.withoutReadObservation { firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0 }
 
 /**
- * Scrolls to the newest bubble. If this is cancelled because a newer arrival replaced it, the decision to follow stays with
- * [follow] for that arrival to finish; if the reader's own finger took the list over, it is dropped, and they are left alone.
+ * Scrolls to the newest bubble, marking [follow] pending meanwhile. It is cleared in `finally`: when the scroll lands,
+ * when the reader's own finger takes the list over, and when this effect is replaced (a newer arrival, which has already
+ * read `pending` in composition and follows on its own; or her typing stopping, which follows nothing).
  */
 private suspend fun LazyListState.followToBottom(follow: Follow) {
-    follow.pending = true
+    val token = follow.begin()
     try {
         animateScrollToItem(0)
-        follow.pending = false
-    } catch (e: CancellationException) {
-        if (currentCoroutineContext().isActive) follow.pending = false
-        throw e
+    } finally {
+        follow.end(token)
     }
 }

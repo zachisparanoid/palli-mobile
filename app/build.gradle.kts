@@ -113,6 +113,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
 
     implementation(libs.coil.compose)
+    implementation(libs.androidx.media3.exoplayer)
     implementation(libs.zxing.android.embedded)
 
     testImplementation(libs.junit)

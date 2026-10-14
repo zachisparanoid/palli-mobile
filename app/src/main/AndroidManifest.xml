@@ -9,6 +9,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- The QR scanner and the camera button. zxing-android-embedded also declares CAMERA, which means
+         ACTION_IMAGE_CAPTURE needs it granted too, so the camera button asks first. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".PalliApp"
@@ -62,6 +66,15 @@
         </receiver>
 
         <receiver android:name=".sync.ReplyReceiver" android:exported="false" />
+
+        <!-- The camera writes its photo here (cache/camera/), through a URI granted for that one file. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- WorkManager is initialised by PalliApp with Hilt's worker factory, not by androidx.startup. -->
         <provider

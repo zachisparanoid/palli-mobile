@@ -298,6 +298,26 @@ class ChatScreenTest {
         compose.onNodeWithText("my reply").assertIsDisplayed()
     }
 
+    @Test fun `her typing that stops while it is being followed down leaves nothing behind to yank you later`() {
+        items.value = longChat()
+        show()
+        compose.onNodeWithText("line 40").assertIsDisplayed()
+        compose.mainClock.autoAdvance = false
+        herTyping.value = true
+        compose.mainClock.advanceTimeByFrame()                        // her typing lands below; the follow begins
+        compose.mainClock.advanceTimeByFrame()
+        herTyping.value = false
+        compose.mainClock.advanceTimeByFrame()                        // and stops mid-follow: that follow is replaced
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+
+        compose.onNode(hasScrollAction()).performScrollToIndex(30)    // you go back to read
+        compose.waitForIdle()
+        items.value = longChat(41)
+        compose.waitForIdle()
+        compose.onNodeWithText("line 41").assertDoesNotExist()
+    }
+
     @Test fun `her typing bubble comes into view when you are at the bottom`() {
         items.value = longChat()
         show()
