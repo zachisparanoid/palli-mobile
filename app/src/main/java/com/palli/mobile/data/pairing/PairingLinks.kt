@@ -1,0 +1,43 @@
+package com.palli.mobile.data.pairing
+
+import java.net.URI
+import java.net.URLDecoder
+
+/** What a pairing QR holds: where PaLLi is, and the one-use code (normalised, no dash). */
+data class PairingLink(val baseUrl: String, val code: String)
+
+/** `palli://pair?u=<url-encoded address>&c=<code>` — the backend's core/mobile_pairing.pair_link. */
+object PairingLinks {
+    private const val CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+    fun parse(raw: String): PairingLink? {
+        val uri = runCatching { URI(raw.trim()) }.getOrNull() ?: return null
+        if (uri.scheme != "palli" || uri.host != "pair") return null
+        val params = (uri.rawQuery ?: return null).split("&").mapNotNull { part ->
+            val at = part.indexOf('=')
+            if (at <= 0) null else part.substring(0, at) to URLDecoder.decode(part.substring(at + 1), "UTF-8")
+        }.toMap()
+        val base = normalizeBaseUrl(params["u"] ?: return null) ?: return null
+        val code = normalizeCode(params["c"] ?: return null) ?: return null
+        return PairingLink(base, code)
+    }
+
+    /** Case, spaces and the dash dropped; O/I/L read as 0/1 (Crockford); null unless 8 valid characters. */
+    fun normalizeCode(raw: String): String? {
+        val cleaned = raw.uppercase()
+            .filter { it.isLetterOrDigit() }
+            .map { when (it) { 'O' -> '0'; 'I', 'L' -> '1'; else -> it } }
+            .joinToString("")
+        return cleaned.takeIf { it.length == 8 && it.all { c -> c in CROCKFORD } }
+    }
+
+    /** `http://` added when there is no scheme; trailing slashes dropped; only http(s) with a host. */
+    fun normalizeBaseUrl(raw: String): String? {
+        var s = raw.trim().trimEnd('/')
+        if (s.isEmpty()) return null
+        if (!s.contains("://")) s = "http://$s"
+        val uri = runCatching { URI(s) }.getOrNull() ?: return null
+        if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrEmpty()) return null
+        return s
+    }
+}
