@@ -16,9 +16,13 @@ class TimelineRepository @Inject constructor(
     private val db: PalliDatabase,
     private val outgoing: OutgoingFiles,
 ) {
+    /**
+     * The chat. A stored event that will not decode (written by a build whose idea of an event differs) is left out
+     * rather than failing the whole flow, which would crash the chat on every open until unpair.
+     */
     fun observe(window: Int): Flow<List<TimelineItem>> =
         combine(db.events().observeLatest(window), db.pendingSends().observeAll()) { events, pending ->
-            TimelineReducer.reduce(events.map { it.toDto() }, pending)
+            TimelineReducer.reduce(events.mapNotNull { runCatching { it.toDto() }.getOrNull() }, pending)
         }
 
     /** Stores the events and returns only those that were new — a replay returns nothing,

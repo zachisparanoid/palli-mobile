@@ -24,8 +24,10 @@ object TimelineReducer {
         else -> null
     }
 
+    /** A send whose files will not decode still shows, with its words: the queue fails it for good (SendProcessor). */
     private fun fromPending(p: PendingSendEntity) = TimelineItem.Mine(
-        key = "p${p.clientId}", text = p.text, heardAs = null, files = emptyList(), local = p.attachments(),
+        key = "p${p.clientId}", text = p.text, heardAs = null, files = emptyList(),
+        local = runCatching { p.attachments() }.getOrDefault(emptyList()),
         status = when (p.state) {
             SendStates.FAILED -> SendStatus.FAILED
             SendStates.ACCEPTED -> SendStatus.ACCEPTED

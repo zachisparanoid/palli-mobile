@@ -26,6 +26,17 @@ class WireTest {
         assertEquals("trouble", notice.level)
     }
 
+    @Test fun `a null where a default belongs decodes to the default, so the event is not skipped past the ack`() {
+        val mine = Wire.json.decodeFromString(EventDto.serializer(),
+            """{"id":1,"kind":"user_message","at":1.0,"text":"hi","client_id":"c1","files":null}""")
+        assertEquals(emptyList<FileRef>(), mine.files)
+        val hers = Wire.json.decodeFromString(EventDto.serializer(), """{"id":2,"kind":"message","at":1.0,"text":"hi","reminder":null}""")
+        assertEquals(false, hers.reminder)
+
+        val frame = Frames.decode("""{"type":"event","event":{"id":3,"kind":"message","at":1.0,"text":"a","files":null,"reminder":null}}""")
+        assertEquals(3L, (frame as ServerFrame.Event).event.id)
+    }
+
     @Test fun `server frames decode and unknown ones do not crash`() {
         val event = Frames.decode("""{"type":"event","event":{"id":1,"kind":"message","at":1.0,"text":"a"}}""")
         assertEquals(1L, (event as ServerFrame.Event).event.id)

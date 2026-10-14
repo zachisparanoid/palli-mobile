@@ -2,11 +2,14 @@ package com.palli.mobile.domain
 
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.palli.mobile.data.local.EventEntity
+import com.palli.mobile.data.local.LocalAttachment
 import com.palli.mobile.data.local.PalliDatabase
 import com.palli.mobile.data.local.PendingSendEntity
 import com.palli.mobile.data.local.SendStates
 import com.palli.mobile.data.remote.EventDto
 import com.palli.mobile.data.remote.EventKinds
+import com.palli.mobile.domain.timeline.TimelineItem
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -51,5 +54,22 @@ class TimelineRepositoryTest {
         repo.insertNew(listOf(hers(5), hers(6)))
         assertEquals(6, repo.eventCount())
         assertEquals(3, repo.observe(3).first().size)
+    }
+
+    @Test fun `a stored row that will not decode is left out, and the chat shows the rest`() = runTest {
+        db.events().insertAll(listOf(
+            EventEntity.from(hers(1)),
+            EventEntity(id = 2, kind = EventKinds.MESSAGE, at = 2.0, clientId = null, json = "{not json"),
+            EventEntity.from(hers(3)),
+        ))
+        db.pendingSends().upsert(PendingSendEntity("bad", "words kept", "{not a list", SendStates.FAILED, "x", 1, 1))
+        db.pendingSends().upsert(PendingSendEntity("good", "fine", "[]", SendStates.QUEUED, null, 2, 0))
+
+        val items = repo.observe(50).first()
+
+        assertEquals(listOf("e1", "e3", "pbad", "pgood"), items.map { it.key })
+        val bad = items[2] as TimelineItem.Mine
+        assertEquals("words kept", bad.text)                          // its words still show, without the files it lost
+        assertEquals(emptyList<LocalAttachment>(), bad.local)
     }
 }

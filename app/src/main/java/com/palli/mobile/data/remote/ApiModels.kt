@@ -11,6 +11,7 @@ object Wire {
         ignoreUnknownKeys = true      // a newer backend may add fields
         explicitNulls = false
         encodeDefaults = true
+        coerceInputValues = true      // and send null for one that has a default: an event that failed to decode is skipped past the ack
     }
 }
 
