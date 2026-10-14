@@ -28,6 +28,8 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
 import androidx.core.app.ActivityOptionsCompat
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
@@ -71,6 +73,7 @@ class ChatScreenTest {
     private val connection = MutableStateFlow(ConnState.CONNECTED)
     private val queued = mutableListOf<String>()
     private val retried = mutableListOf<String>()
+    private val removed = mutableListOf<String>()
     private val typed = mutableListOf<Long>()
     private var door = "open"
     private var version = 1
@@ -100,6 +103,7 @@ class ChatScreenTest {
             observe = { items },
             enqueue = { enqueueFailure?.let { e -> throw e }; queued += it },
             retrySend = { retryFailure?.let { e -> throw e }; retried += it },
+            removeSend = { removed += it },
             sendTyping = { typed += 1L },
             eventCount = { 0 },
             minId = { null },
@@ -366,6 +370,39 @@ class ChatScreenTest {
         compose.onNodeWithContentDescription("sent").assertIsDisplayed()
         compose.onNodeWithText("PaLLi's door is shut — tap to retry").performClick()
         assertEquals(listOf("c"), retried)
+    }
+
+    @Test fun `a long-press on a failed send offers Remove, which removes it, and a tap still retries`() {
+        items.value = listOf(mine("pc", "broken", SendStatus.FAILED, failure = "Not delivered"))
+        show()
+
+        compose.onNodeWithText("Remove").assertDoesNotExist()      // never one stray tap away
+        compose.onNodeWithText("Not delivered — tap to retry").performTouchInput { longClick() }
+        compose.onNodeWithText("Remove").assertIsDisplayed().performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("c"), removed)
+        assertTrue(retried.isEmpty())
+        compose.onNodeWithText("Remove").assertDoesNotExist()      // the menu closed
+
+        compose.onNodeWithText("Not delivered — tap to retry").performClick()
+        assertEquals(listOf("c"), retried)
+        assertEquals(listOf("c"), removed)
+    }
+
+    @Test fun `Remove is offered only on a failed send, never on one on its way, one delivered, or hers`() {
+        items.value = listOf(
+            hers(1, "hers"),
+            mine("e2", "delivered"),
+            mine("pa", "waiting", SendStatus.SENDING),
+            mine("pb", "arrived", SendStatus.ACCEPTED),
+        )
+        show()
+        for (text in listOf("hers", "delivered", "waiting", "arrived")) {
+            compose.onNodeWithText(text).performTouchInput { longClick() }
+            compose.waitForIdle()
+            compose.onNodeWithText("Remove").assertDoesNotExist()
+        }
+        assertTrue(removed.isEmpty())
     }
 
     @Test fun `a message that could not be queued says so over the composer, and is back in the box`() {

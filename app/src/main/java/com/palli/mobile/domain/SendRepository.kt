@@ -14,15 +14,34 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * The primary constructor takes the one thing it asks of WorkManager, scheduling a send's work, so a test can make that
- * fail; the `@Inject` one is what Hilt uses (the same shape as ConnectionController).
+ * The primary constructor takes what it asks of WorkManager (scheduling and cancelling a send's work) and of the send's
+ * folder, so a test can stand in for them or make them fail; the `@Inject` one is what Hilt uses (the same shape as
+ * ConnectionController).
  */
 @Singleton
 class SendRepository(
     private val pending: PendingSendDao,
+    private val forgetFiles: (clientId: String) -> Unit = {},
+    private val cancelWork: (clientId: String) -> Unit = {},
     private val schedule: (clientId: String) -> Unit,
 ) {
-    @Inject constructor(pending: PendingSendDao, work: WorkManager) : this(pending, { SendWorker.enqueue(work, it) })
+    @Inject constructor(pending: PendingSendDao, work: WorkManager, outgoing: OutgoingFiles) : this(
+        pending,
+        forgetFiles = outgoing::forget,
+        cancelWork = { work.cancelUniqueWork(SendWorker.uniqueName(it)) },
+        schedule = { SendWorker.enqueue(work, it) },
+    )
+
+    /**
+     * Takes a failed send off the phone, for good: its row, its files and its work. Only a failed one: a send that is on
+     * its way (or already with PaLLi) is left alone, so a bubble that was retried just before cannot lose its files
+     * mid-upload. The row goes first, so its bubble does; a death after it leaves only a folder nothing points at.
+     */
+    suspend fun remove(clientId: String) {
+        if (pending.deleteIfFailed(clientId) == 0) return
+        forgetFiles(clientId)
+        cancelWork(clientId)
+    }
 
     fun newClientId(): String = UUID.randomUUID().toString()
 

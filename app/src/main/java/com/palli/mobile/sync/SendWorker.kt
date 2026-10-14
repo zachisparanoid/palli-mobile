@@ -42,7 +42,9 @@ class SendWorker @AssistedInject constructor(
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                 .addTag(TAG)
                 .build()
-            work.enqueueUniqueWork("send-$clientId", ExistingWorkPolicy.KEEP, request)
+            work.enqueueUniqueWork(uniqueName(clientId), ExistingWorkPolicy.KEEP, request)
         }
+
+        fun uniqueName(clientId: String) = "send-$clientId"
     }
 }

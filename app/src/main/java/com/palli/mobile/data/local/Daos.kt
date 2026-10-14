@@ -38,5 +38,8 @@ interface PendingSendDao {
     @Query("UPDATE pending_sends SET state = :to WHERE clientId = :clientId AND state IN (:from)")
     suspend fun moveIf(clientId: String, from: List<String>, to: String): Int
     @Query("DELETE FROM pending_sends WHERE clientId IN (:clientIds)") suspend fun deleteAll(clientIds: List<String>)
+    /** Deletes the send only if it has failed; returns the rows deleted (0 for a send on its way or already accepted). */
+    @Query("DELETE FROM pending_sends WHERE clientId = :clientId AND state = '${SendStates.FAILED}'")
+    suspend fun deleteIfFailed(clientId: String): Int
     @Query("DELETE FROM pending_sends") suspend fun clear()
 }

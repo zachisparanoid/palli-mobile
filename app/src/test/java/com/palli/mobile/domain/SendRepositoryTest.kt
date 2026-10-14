@@ -18,6 +18,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.File
 
 /** The real SendRepository over a real database and the (test) WorkManager. */
 @RunWith(RobolectricTestRunner::class)
@@ -26,12 +27,13 @@ class SendRepositoryTest {
     private lateinit var db: PalliDatabase
     private lateinit var work: WorkManager
     private lateinit var repo: SendRepository
+    private val outgoing = OutgoingFiles(context)
 
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(context)
         work = WorkManager.getInstance(context)
         db = Room.inMemoryDatabaseBuilder(context, PalliDatabase::class.java).allowMainThreadQueries().build()
-        repo = SendRepository(db.pendingSends(), work)
+        repo = SendRepository(db.pendingSends(), work, outgoing)
     }
 
     @After fun tearDown() = db.close()
@@ -85,7 +87,7 @@ class SendRepositoryTest {
                 real.idsIn(states).also { real.setState("racing", SendStates.ACCEPTED, null) }
         }
 
-        SendRepository(dao, work).resumeUnsettled()
+        SendRepository(dao, work, outgoing).resumeUnsettled()
 
         assertEquals(SendStates.ACCEPTED, real.get("racing")!!.state)                     // not dragged back to queued
         assertEquals(emptyList<WorkInfo.State>(), workStates("racing"))                  // and no second send scheduled for it
@@ -127,7 +129,7 @@ class SendRepositoryTest {
         SendRepository(dao) { throw boom }.enqueue("hello", clientId = "c1")
 
         assertEquals(SendStates.QUEUED, real.get("c1")!!.state)
-        SendRepository(real, work).resumeUnsettled()
+        SendRepository(real, work, outgoing).resumeUnsettled()
         assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates("c1"))
     }
 
@@ -147,5 +149,36 @@ class SendRepositoryTest {
         assertEquals(SendStates.QUEUED, db.pendingSends().get("c1")!!.state)
         assertEquals(null, db.pendingSends().get("c1")!!.failure)
         assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates("c1"))
+    }
+
+    // ---- removing a failed send ----
+
+    @Test fun `removing a failed send deletes its row, its folder and its work`() = runTest {
+        row("c1", SendStates.FAILED, "Too long to send as a message: over 64 KB of words.")
+        val photo = File(outgoing.dirFor("c1"), "cat.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        SendWorker.enqueue(work, "c1")                              // say a retry had scheduled it once
+        row("c2", SendStates.FAILED, "Not delivered")               // another, left alone
+
+        repo.remove("c1")
+
+        assertEquals(null, db.pendingSends().get("c1"))
+        assertEquals(false, photo.exists())
+        assertEquals(false, File(context.filesDir, "outgoing/c1").exists())
+        assertEquals(listOf(WorkInfo.State.CANCELLED), workStates("c1"))
+        assertEquals(SendStates.FAILED, db.pendingSends().get("c2")!!.state)
+    }
+
+    @Test fun `a send that is on its way, or already with PaLLi, is never removed`() = runTest {
+        for ((id, state) in listOf("q" to SendStates.QUEUED, "s" to SendStates.SENDING, "a" to SendStates.ACCEPTED)) {
+            row(id, state)
+            val file = File(outgoing.dirFor(id), "note.m4a").apply { writeBytes(byteArrayOf(9)) }
+            SendWorker.enqueue(work, id)
+
+            repo.remove(id)
+
+            assertEquals(state, db.pendingSends().get(id)!!.state)
+            assertEquals(true, file.exists())
+            assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates(id))
+        }
     }
 }

@@ -101,6 +101,8 @@ class ChatViewModel(
     /** Whether the battery question has been put; the default says it has, so a chat without it never asks. */
     private val askedBattery: suspend () -> Boolean = { true },
     private val saveAskedBattery: suspend () -> Unit = { },
+    /** Takes a failed send off the phone: its row and its files. */
+    private val removeSend: suspend (clientId: String) -> Unit = { },
 ) : ViewModel() {
     @Inject constructor(
         timeline: TimelineRepository,
@@ -139,6 +141,7 @@ class ChatViewModel(
         gate = gate,
         askedBattery = prefs::askedBattery,
         saveAskedBattery = prefs::markAskedBattery,
+        removeSend = sends::remove,
     )
 
     private val window = MutableStateFlow(FIRST_WINDOW)
@@ -402,6 +405,24 @@ class ChatViewModel(
     }
 
     /**
+     * Takes a failed send off the phone (the bubble's long-press menu). `key` is a pending item's key, as for [retry]; any
+     * other key is ignored. Nothing goes to PaLLi, so this works while sending is blocked too.
+     */
+    fun remove(key: String) {
+        if (!key.startsWith("p")) return
+        viewModelScope.launch {
+            try {
+                removeSend(key.removePrefix("p"))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "a send could not be removed: ${e.javaClass.simpleName}")
+                tell(REMOVE_FAILED)
+            }
+        }
+    }
+
+    /**
      * Called when the oldest bubble comes near. Older events this phone already holds are only hidden by the window, so
      * those are shown first, with no network; only when the window already reaches the oldest one held does it ask PaLLi
      * for the next page before it.
@@ -607,6 +628,7 @@ class ChatViewModel(
         const val SEND_FAILED_KEPT = "Couldn't send that message. It's back in the box, so you can try again."
         const val SEND_FAILED_LOST = "Couldn't send that message, and you'd typed something new, so type it again."
         const val RETRY_FAILED = "Couldn't send that again just now. Tap it to try once more."
+        const val REMOVE_FAILED = "Couldn't remove that message just now."
         const val FILES_FAILED = "Couldn't send that. Pick it again to try once more."
         const val FILES_FAILED_KEPT = "Couldn't send that. Your words are back in the box; pick the files again to try once more."
         const val FILES_FAILED_LOST = "Couldn't send that, and you'd typed something new, so type your words again and pick the files again."

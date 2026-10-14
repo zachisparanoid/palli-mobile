@@ -65,6 +65,8 @@ class ChatViewModelTest {
     private val typingFrames = mutableListOf<Long>()
     private val queued = mutableListOf<String>()
     private val retried = mutableListOf<String>()
+    private val removed = mutableListOf<String>()
+    private var removeFailure: Throwable? = null
     private val unpaired = mutableListOf<String?>()
     private val windows = mutableListOf<Int>()
     private val stored = mutableListOf<List<Long>>()
@@ -89,6 +91,7 @@ class ChatViewModelTest {
         observe = observe,
         enqueue = { text -> held?.await(); enqueueFailure?.let { throw it }; queued += text },
         retrySend = { id -> retryFailure?.let { throw it }; retried += id },
+        removeSend = { id -> removeFailure?.let { throw it }; removed += id },
         sendTyping = { typingFrames += now },
         eventCount = { count },
         minId = { oldest },
@@ -239,6 +242,21 @@ class ChatViewModelTest {
         vm.retry("pabc")
         assertTrue(retried.isEmpty())
         assertEquals(ChatViewModel.RETRY_FAILED, vm.notice.value)
+    }
+
+    @Test fun `remove takes the client id off a pending key, and ignores a key that is not a send`() {
+        val vm = viewModel()
+        vm.remove("p3f1c-0b")
+        vm.remove("e42")
+        assertEquals(listOf("3f1c-0b"), removed)
+    }
+
+    @Test fun `a remove that throws does not take the app down, and says so`() {
+        removeFailure = IllegalStateException("disk full")
+        val vm = viewModel()
+        vm.remove("pabc")
+        assertTrue(removed.isEmpty())
+        assertEquals(ChatViewModel.REMOVE_FAILED, vm.notice.value)
     }
 
     // ---- scrollback ----

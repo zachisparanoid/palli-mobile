@@ -242,7 +242,7 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
                 verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
             ) {
                 if (typing) item(key = "typing") { TypingBubble() }
-                items(newestFirst, key = { it.key }) { Bubble(it, vm::retry, media) }
+                items(newestFirst, key = { it.key }) { Bubble(it, vm::retry, vm::remove, media) }
             }
         }
     }

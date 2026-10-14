@@ -7,6 +7,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,8 @@ import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -66,35 +69,60 @@ private val MineShape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
 private val HersShape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp)
 private val PhotoShape = RoundedCornerShape(10.dp)
 
-/** [media] shows, plays and saves the files; with none (a chat that has no media) a file is shown by its name. */
+/**
+ * [media] shows, plays and saves the files; with none (a chat that has no media) a file is shown by its name. A failed
+ * send of yours retries on a tap ([onRetry]) and, from a long-press menu, can be removed ([onRemove]).
+ */
 @Composable
-fun Bubble(item: TimelineItem, onRetry: (String) -> Unit, media: ChatMedia?) = when (item) {
-    is TimelineItem.Mine -> MineBubble(item, onRetry, media)
+fun Bubble(item: TimelineItem, onRetry: (String) -> Unit, onRemove: (String) -> Unit, media: ChatMedia?) = when (item) {
+    is TimelineItem.Mine -> MineBubble(item, onRetry, onRemove, media)
     is TimelineItem.Hers -> HersBubble(item)
     is TimelineItem.HerVoice -> HerVoiceBubble(item, media)
     is TimelineItem.HerFile -> HerFileBubble(item, media)
     is TimelineItem.Notice -> NoticeLine(item)
 }
 
+/**
+ * Yours. A failed one is the only bubble with a menu: a tap retries, as the line under it says, and a long-press opens a
+ * small menu whose one item is Remove, so a removal is never one stray tap.
+ */
 @Composable
-private fun MineBubble(item: TimelineItem.Mine, onRetry: (String) -> Unit, media: ChatMedia?) {
+private fun MineBubble(item: TimelineItem.Mine, onRetry: (String) -> Unit, onRemove: (String) -> Unit, media: ChatMedia?) {
+    val failed = item.status == SendStatus.FAILED
+    var menu by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-        Column(horizontalAlignment = Alignment.End) {
-            Surface(shape = MineShape, color = PalliColors.MineBubble, border = BorderStroke(1.dp, PalliColors.MineBorder),
-                modifier = Modifier.widthIn(max = 300.dp)) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MineAttachments(item, media)
-                    if (item.text.isNotBlank()) Text(item.text)
-                    item.heardAs?.let { Text("heard as: $it", style = MaterialTheme.typography.bodySmall, color = PalliColors.Muted) }
+        Box {
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = if (failed) {
+                    Modifier.combinedClickable(onClickLabel = "Retry", onLongClickLabel = "More",
+                        onLongClick = { menu = true }, onClick = { onRetry(item.key) })
+                } else Modifier,
+            ) {
+                Surface(shape = MineShape, color = PalliColors.MineBubble, border = BorderStroke(1.dp, PalliColors.MineBorder),
+                    modifier = Modifier.widthIn(max = 300.dp)) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MineAttachments(item, media)
+                        if (item.text.isNotBlank()) Text(item.text)
+                        item.heardAs?.let { Text("heard as: $it", style = MaterialTheme.typography.bodySmall, color = PalliColors.Muted) }
+                    }
+                }
+                when (item.status) {
+                    SendStatus.SENDING -> Icon(Icons.Outlined.Schedule, "sending", Modifier.size(14.dp), tint = PalliColors.Faint)
+                    SendStatus.ACCEPTED -> Icon(Icons.Outlined.Done, "sent", Modifier.size(14.dp), tint = PalliColors.Faint)
+                    SendStatus.FAILED -> Text("${item.failure ?: "Not sent"} — tap to retry",
+                        style = MaterialTheme.typography.bodySmall, color = PalliColors.Trouble,
+                        modifier = Modifier.padding(vertical = 6.dp))
+                    null -> Unit
                 }
             }
-            when (item.status) {
-                SendStatus.SENDING -> Icon(Icons.Outlined.Schedule, "sending", Modifier.size(14.dp), tint = PalliColors.Faint)
-                SendStatus.ACCEPTED -> Icon(Icons.Outlined.Done, "sent", Modifier.size(14.dp), tint = PalliColors.Faint)
-                SendStatus.FAILED -> Text("${item.failure ?: "Not sent"} — tap to retry",
-                    style = MaterialTheme.typography.bodySmall, color = PalliColors.Trouble,
-                    modifier = Modifier.clickable { onRetry(item.key) }.padding(vertical = 6.dp))
-                null -> Unit
+            if (failed) {
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = PalliColors.Card) {
+                    DropdownMenuItem(text = { Text("Remove") }, onClick = {
+                        menu = false
+                        onRemove(item.key)
+                    })
+                }
             }
         }
     }
