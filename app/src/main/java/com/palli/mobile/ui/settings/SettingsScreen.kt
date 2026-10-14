@@ -55,7 +55,8 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = hiltViewModel()) 
     val stay by vm.stayConnected.collectAsStateWithLifecycle()
     val unpairing by vm.unpairing.collectAsStateWithLifecycle()
     val notice by vm.notice.collectAsStateWithLifecycle()
-    var limited by remember { mutableStateOf(false) }
+    // Asked at once, not set from false on the first resume: that would say "Not limited" for a frame on every entry and rotation.
+    var limited by remember { mutableStateOf(BatteryExemption.limited(context)) }
     var confirmUnpair by rememberSaveable { mutableStateOf(false) }
     // Read again on every return to the screen: the system's question is a screen of its own, and its answer is not sent back.
     LifecycleResumeEffect(Unit) {

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -17,6 +18,10 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsOff
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.test.core.app.ApplicationProvider
 import com.palli.mobile.data.session.Session
 import com.palli.mobile.ui.battery.BatteryExemption
@@ -97,6 +102,24 @@ class SettingsScreenTest {
         val asked = nextStarted()!!
         assertEquals(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, asked.action)
         assertEquals("package:${app.packageName}", asked.dataString)
+    }
+
+    /** Shown, started, but never resumed: the screen's check on each return to it has not run, so only its first answer shows. */
+    private class StartedNotResumed : LifecycleOwner {
+        private val registry = LifecycleRegistry.createUnsafe(this).also { it.currentState = Lifecycle.State.STARTED }
+        override val lifecycle: Lifecycle get() = registry
+    }
+
+    @Test fun `the battery line is right in the first frame, not put right a frame later`() {
+        shadowOf(app.getSystemService(PowerManager::class.java)).setIgnoringBatteryOptimizations(app.packageName, false)
+        val vm = SettingsViewModel(session, stored, { on -> written += on }, { })
+        compose.setContent {
+            CompositionLocalProvider(LocalLifecycleOwner provides StartedNotResumed()) {
+                PalliTheme { SettingsScreen(onBack = { }, vm = vm) }
+            }
+        }
+        compose.onNodeWithText("Android may pause the connection to save battery, which delays her messages.").assertIsDisplayed()
+        assertAbsent("Not limited — her messages can arrive at once.")          // it must not say so for a frame first
     }
 
     @Test fun `when the app is not limited it says so and has nothing to ask`() {

@@ -1,14 +1,13 @@
-package com.palli.mobile.ui.settings
+package com.palli.mobile.ui.battery
 
 import android.app.Application
-import androidx.activity.ComponentActivity
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ResolveInfo
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.activity.ComponentActivity
 import androidx.test.core.app.ApplicationProvider
-import com.palli.mobile.ui.battery.BatteryExemption
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
