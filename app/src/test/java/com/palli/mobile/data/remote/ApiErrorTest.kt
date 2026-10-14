@@ -37,6 +37,16 @@ class ApiErrorTest {
         assertTrue(meFails(500, "boom") is ApiError.Server)
     }
 
+    @Test fun `an odd error body never throws out of apiCall`() = runTest {
+        // A gateway's envelope: the "error" is an object, not a sentence.
+        assertTrue(meFails(500, """{"error":{}}""") is ApiError.Server)
+        assertTrue(meFails(502, """{"error":{"code":502,"message":"bad gateway"}}""") is ApiError.Server)
+        // A 503 whose reason is not a string still says the door is closed.
+        assertEquals(ApiError.DoorClosed("door_closed"), meFails(503, """{"detail":{"reason":{}}}"""))
+        // A validation list whose "msg" is not a string is skipped, not fatal.
+        assertTrue(meFails(422, """{"detail":[{"msg":{}},{"msg":"bad"}]}""") is ApiError.Rejected)
+    }
+
     @Test fun `a server that is not there is Unreachable`() = runTest {
         server.shutdown()
         assertTrue(apiCall { api.me() }.exceptionOrNull() is ApiError.Unreachable)

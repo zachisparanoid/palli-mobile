@@ -6,7 +6,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class Session(val baseUrl: String, val token: String, val deviceId: Long, val deviceName: String)
+data class Session(val baseUrl: String, val token: String, val deviceId: Long, val deviceName: String) {
+    /** The token is the phone's only credential: a log line, a failed assertion or a crash report must never carry it. */
+    override fun toString() = "Session(baseUrl=$baseUrl, token=***, deviceId=$deviceId, deviceName=$deviceName)"
+}
 
 /** Who this phone is to PaLLi. Null means unpaired; `unpairedReason` says why when it was not his choice. */
 @Singleton

@@ -7,7 +7,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import retrofit2.HttpException
 import java.io.IOException
 
@@ -59,9 +58,9 @@ internal fun detailOf(body: String): Pair<String, String?> {
         ?: return body.trim().take(200) to null
     return when (val detail = obj["detail"]) {
         is JsonPrimitive -> detail.content to null
-        is JsonObject -> detail["reason"]?.jsonPrimitive?.contentOrNull.let { (it ?: "") to it }
-        is JsonArray -> detail.mapNotNull { (it as? JsonObject)?.get("msg")?.jsonPrimitive?.contentOrNull }
+        is JsonObject -> (detail["reason"] as? JsonPrimitive)?.contentOrNull.let { (it ?: "") to it }
+        is JsonArray -> detail.mapNotNull { ((it as? JsonObject)?.get("msg") as? JsonPrimitive)?.contentOrNull }
             .joinToString("; ") to null
-        else -> (obj["error"]?.jsonPrimitive?.contentOrNull ?: body.trim().take(200)) to null
+        else -> ((obj["error"] as? JsonPrimitive)?.contentOrNull ?: body.trim().take(200)) to null
     }
 }

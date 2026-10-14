@@ -28,7 +28,10 @@ object EventKinds {
     val token: String,
     @SerialName("device_id") val deviceId: Long,
     @SerialName("api_version") val apiVersion: Int,
-)
+) {
+    /** The token is the phone's only credential: it never prints. */
+    override fun toString() = "PairResponse(token=***, deviceId=$deviceId, apiVersion=$apiVersion)"
+}
 
 @Serializable data class DeviceRef(val id: Long, val name: String)
 
