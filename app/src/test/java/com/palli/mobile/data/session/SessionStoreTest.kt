@@ -25,7 +25,7 @@ class SessionStoreTest {
         }
     }
 
-    private val session = Session("http://100.87.134.112:8000", "pmd_secret", 7, "Pixel 9")
+    private val session = Session("http://100.64.0.7:8000", "pmd_secret", 7, "Pixel 9")
 
     /** One run of the app over [file]: the store it would open (the production one), and its end, which lets go of the file. */
     private inner class Run(file: File) {

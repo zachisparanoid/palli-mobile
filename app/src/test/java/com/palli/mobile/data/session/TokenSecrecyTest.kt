@@ -12,11 +12,11 @@ class TokenSecrecyTest {
     private val token = "pmd_s3cret_t0ken"
 
     @Test fun `a Session never prints its token`() {
-        val session = Session("http://100.87.134.112:8000", token, 7, "Pixel 9")
+        val session = Session("http://100.64.0.7:8000", token, 7, "Pixel 9")
         val printed = session.toString()
         assertFalse(printed, printed.contains(token))
         assertTrue(printed, printed.contains("***"))
-        assertTrue(printed, printed.contains("100.87.134.112") && printed.contains("Pixel 9") && printed.contains("7"))
+        assertTrue(printed, printed.contains("100.64.0.7") && printed.contains("Pixel 9") && printed.contains("deviceId=7"))
         assertFalse("$session".contains(token))
     }
 

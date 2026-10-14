@@ -8,8 +8,8 @@ import org.junit.Test
 
 class PairingLinksTest {
     @Test fun `the QR's link gives the address and the code`() {
-        val link = PairingLinks.parse("palli://pair?u=http%3A%2F%2Fbuilder.tail2d20b5.ts.net%3A8000&c=K7QM-2XPA")
-        assertEquals(PairingLink("http://builder.tail2d20b5.ts.net:8000", "K7QM2XPA"), link)
+        val link = PairingLinks.parse("palli://pair?u=http%3A%2F%2Fpalli-box.example.ts.net%3A8000&c=K7QM-2XPA")
+        assertEquals(PairingLink("http://palli-box.example.ts.net:8000", "K7QM2XPA"), link)
     }
 
     @Test fun `anything that is not a pairing link is null`() {
@@ -29,10 +29,10 @@ class PairingLinksTest {
     }
 
     @Test fun `an address gains http, loses trailing slashes, keeps https and a path`() {
-        assertEquals("http://100.87.134.112:8000", PairingLinks.normalizeBaseUrl("100.87.134.112:8000"))
-        assertEquals("http://builder:8000", PairingLinks.normalizeBaseUrl("http://builder:8000///"))
-        assertEquals("https://builder.ts.net/palli", PairingLinks.normalizeBaseUrl("https://builder.ts.net/palli/"))
-        assertNull(PairingLinks.normalizeBaseUrl("ftp://builder"))
+        assertEquals("http://100.64.0.7:8000", PairingLinks.normalizeBaseUrl("100.64.0.7:8000"))
+        assertEquals("http://palli-box:8000", PairingLinks.normalizeBaseUrl("http://palli-box:8000///"))
+        assertEquals("https://palli-box.example.ts.net/palli", PairingLinks.normalizeBaseUrl("https://palli-box.example.ts.net/palli/"))
+        assertNull(PairingLinks.normalizeBaseUrl("ftp://palli-box"))
         assertNull(PairingLinks.normalizeBaseUrl("   "))
         assertNull(PairingLinks.normalizeBaseUrl("http://"))       // half-typed: a scheme, no host
         assertNull(PairingLinks.normalizeBaseUrl("https:///"))

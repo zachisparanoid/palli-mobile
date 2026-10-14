@@ -16,6 +16,7 @@ import com.palli.mobile.data.local.EventEntity
 import com.palli.mobile.data.local.PalliDatabase
 import com.palli.mobile.data.local.PendingSendEntity
 import com.palli.mobile.data.local.SendStates
+import com.palli.mobile.data.remote.ApiError
 import com.palli.mobile.data.remote.ApiFactory
 import com.palli.mobile.data.remote.AuthInterceptor
 import com.palli.mobile.data.remote.EventDto
@@ -272,6 +273,18 @@ class PairingRepositoryTest {
 
         assertTrue(herFolder.exists())
         assertEquals("pmd_test", sessions.current!!.token)
+    }
+
+    @Test fun `a PaLLi of another api version is refused at pairing, and nothing is saved or cleared`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"token":"pmd_new","device_id":2,"api_version":2}"""))
+        val error = repo.pair(server.url("/").toString().trimEnd('/'), "K7QM-2XPA", "Phone").exceptionOrNull()
+
+        assertTrue(error is ApiError.Rejected)
+        assertTrue(error!!.message!!, error.message!!.contains("speaks version 2"))
+        assertEquals("pmd_test", sessions.current!!.token)                 // the pairing it has is kept
+        assertEquals("pmd_test", prefs.read().tokenBlob)                   // and so is what is on disk (PlainCipher)
+        assertEquals(1, db.events().count())                               // her timeline, her files: untouched
+        assertTrue(herFolder.exists())
     }
 
     @Test fun `a pairing answer this app cannot read shows a fixed sentence, and never the answer, which holds the token`() = runTest {
