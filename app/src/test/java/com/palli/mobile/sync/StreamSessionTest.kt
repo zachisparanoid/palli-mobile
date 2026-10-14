@@ -259,6 +259,24 @@ class StreamSessionTest {
         assertEquals(ConnState.IDLE, stream.state.value)
     }
 
+    @Test fun `stop settles the state at once, before the cancelled loop has unwound`() = runTest {
+        val sockets = FakeSockets()
+        val stream = newSession(sockets)
+        stream.start(); runCurrent()
+        val socket = sockets.opened.single()
+        socket.listener.onOpen()
+        socket.listener.onMessage("""{"type":"typing","on":true}"""); runCurrent()
+        assertEquals(ConnState.CONNECTED, stream.state.value)
+        assertTrue(stream.herTyping.value)
+
+        stream.stop()                                               // no runCurrent: the loop's own `finally` has not run
+        assertEquals(ConnState.IDLE, stream.state.value)
+        assertEquals(false, stream.herTyping.value)
+        runCurrent()
+        assertEquals(ConnState.IDLE, stream.state.value)
+        assertEquals(false, stream.herTyping.value)
+    }
+
     @Test fun `stop during a backoff wait never reconnects, and a start after it waits the full backoff`() = runTest {
         val sockets = FakeSockets()
         val stream = newSession(sockets)

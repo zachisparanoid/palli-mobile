@@ -23,7 +23,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 enum class ConnState { IDLE, CONNECTING, CONNECTED, WAITING }
 
-/** Who hears about events that were new to this phone (the notifier). */
+/**
+ * Who hears about events that were new to this phone (the notifier). Called inline on the connection loop, whose silence
+ * watchdog wraps only `receive()`: an implementation must do fast, local work only and never wait on the network.
+ */
 interface EventSink {
     suspend fun onNewEvents(events: List<EventDto>)
 }
@@ -37,9 +40,10 @@ interface EventSink {
  * loop: the attempt is abandoned, its socket closed, and the loop backs off and tries again. Only stop(), the scope
  * ending, no session, or 4401 end it.
  *
- * The loop owns `state` and `herTyping`: stop() only cancels it and closes the socket, and the loop settles on IDLE in
- * its own `finally`. A loop that has been stopped (or replaced by a newer start()) writes neither, so CONNECTED can
- * never appear after a stop.
+ * The loop owns `state` and `herTyping` while it is the current one (`job === self`). stop() cancels it, closes the
+ * socket, and settles both flows itself (IDLE, not typing) in the same locked block that clears `job`; the loop also
+ * settles on IDLE in its own `finally`. A loop that has been stopped (or replaced by a newer start()) writes neither,
+ * so CONNECTED can never appear after a stop, not even for the moment before the cancelled loop unwinds.
  */
 class StreamSession(
     private val scope: CoroutineScope,
@@ -80,7 +84,14 @@ class StreamSession(
     }
 
     fun stop() {
-        val running = synchronized(lock) { job.also { job = null } }
+        val running = synchronized(lock) {
+            // Settle the flows here rather than waiting for the cancelled loop's `finally`: a stopped session must not
+            // read CONNECTED for the moment in between. Safe, because every other writer is guarded by `job === self`
+            // and `job` is cleared in this same block, so the loop being stopped can no longer write over this.
+            _state.value = ConnState.IDLE
+            _herTyping.value = false
+            job.also { job = null }
+        }
         running?.cancel()
         val socket = handle
         handle = null

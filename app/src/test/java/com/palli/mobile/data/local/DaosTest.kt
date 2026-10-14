@@ -51,4 +51,17 @@ class DaosTest {
         db.pendingSends().deleteAll(listOf("c1"))
         assertEquals(emptyList<PendingSendEntity>(), db.pendingSends().observeAll().first())
     }
+
+    @Test fun `idsIn finds the sends in the asked states, oldest first`() = runTest {
+        val dao = db.pendingSends()
+        dao.upsert(PendingSendEntity("late", "c", "[]", SendStates.QUEUED, null, 30L, 0))
+        dao.upsert(PendingSendEntity("mid", "b", "[]", SendStates.SENDING, null, 20L, 1))
+        dao.upsert(PendingSendEntity("early", "a", "[]", SendStates.QUEUED, null, 10L, 0))
+        dao.upsert(PendingSendEntity("bad", "d", "[]", SendStates.FAILED, "too large", 15L, 1))
+        dao.upsert(PendingSendEntity("done", "e", "[]", SendStates.ACCEPTED, null, 5L, 1))
+
+        assertEquals(listOf("early", "mid", "late"), dao.idsIn(listOf(SendStates.QUEUED, SendStates.SENDING)))
+        assertEquals(listOf("bad"), dao.idsIn(listOf(SendStates.FAILED)))
+        assertEquals(emptyList<String>(), dao.idsIn(emptyList()))
+    }
 }

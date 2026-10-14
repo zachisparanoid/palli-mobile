@@ -30,6 +30,9 @@ interface PendingSendDao {
     suspend fun setState(clientId: String, state: String, failure: String?)
     @Query("UPDATE pending_sends SET attempts = attempts + 1 WHERE clientId = :clientId")
     suspend fun bumpAttempts(clientId: String)
+    /** The ids of the sends in any of these states, oldest first. */
+    @Query("SELECT clientId FROM pending_sends WHERE state IN (:states) ORDER BY createdAt, clientId")
+    suspend fun idsIn(states: List<String>): List<String>
     @Query("DELETE FROM pending_sends WHERE clientId IN (:clientIds)") suspend fun deleteAll(clientIds: List<String>)
     @Query("DELETE FROM pending_sends") suspend fun clear()
 }
