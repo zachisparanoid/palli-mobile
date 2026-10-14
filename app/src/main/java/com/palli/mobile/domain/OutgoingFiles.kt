@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -14,8 +15,10 @@ class OutgoingFiles @Inject constructor(@ApplicationContext private val context:
 
     fun dirFor(clientId: String): File = File(root, clientId).apply { mkdirs() }
 
+    /** Every copy gets its own file name, so two picks with the same display name (or none) never overwrite each other.
+     *  The name PaLLi sees is the attachment's own `name`, not this file's. */
     fun copyIn(clientId: String, uri: Uri, name: String): File {
-        val target = File(dirFor(clientId), safe(name))
+        val target = File(dirFor(clientId), "${UUID.randomUUID().toString().take(8)}-${safe(name)}")
         context.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "The picked file could not be opened." }
             target.outputStream().use { input.copyTo(it) }

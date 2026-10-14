@@ -9,6 +9,8 @@ import com.palli.mobile.data.remote.apiCall
 import com.palli.mobile.data.session.Session
 import com.palli.mobile.data.session.SessionStore
 import com.palli.mobile.sync.SendWorker
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -29,15 +31,22 @@ class PairingRepository @Inject constructor(
         Session(baseUrl, paired.token, paired.deviceId, deviceName).also { sessions.save(it) }
     }
 
-    /** He chose to unpair: tell PaLLi (best effort — she may be unreachable), then forget everything here. */
+    /** He chose to unpair: stop the queue so no in-flight send can 401 over his null reason, tell PaLLi
+     *  (best effort — she may be unreachable), then forget everything here. */
     suspend fun unpairThisPhone() {
+        work.cancelAllWorkByTag(SendWorker.TAG)
         sessions.current?.let { s -> apiCall { apis.forBase(s.baseUrl).revoke(s.deviceId) } }
         unpaired(null)
     }
 
+    /** The wipe comes first and cannot be cancelled: on the 401 path this runs inside a SendWorker, and
+     *  cancelling the queue is what cancels that very worker. So the queue is stopped last — still inside
+     *  the uncancellable block, so a cancelled caller cannot skip it either. */
     override suspend fun unpaired(reason: String?) {
-        work.cancelAllWorkByTag(SendWorker.TAG)
-        timeline.clear()
-        sessions.clear(reason)
+        withContext(NonCancellable) {
+            timeline.clear()
+            sessions.clear(reason)
+            work.cancelAllWorkByTag(SendWorker.TAG)
+        }
     }
 }

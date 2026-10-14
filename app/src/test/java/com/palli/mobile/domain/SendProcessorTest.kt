@@ -101,6 +101,16 @@ class SendProcessorTest {
         assertEquals(SendStates.FAILED, failed.state); assertEquals("cat.jpg is over 20 MB.", failed.failure)
     }
 
+    @Test fun `an empty or invalid message fails for good with the server's sentence`() = runTest {
+        queue("c-6", "")
+        server.enqueue(MockResponse().setResponseCode(422).setBody("""{"detail":"Say something, or attach something."}"""))
+        assertEquals(SendProcessor.Outcome.DONE, processor.process("c-6"))
+        val failed = db.pendingSends().get("c-6")!!
+        assertEquals(SendStates.FAILED, failed.state)
+        assertEquals("Say something, or attach something.", failed.failure)
+        assertEquals(1, server.requestCount)
+    }
+
     @Test fun `a revoked phone unpairs instead of retrying`() = runTest {
         queue("c-4", "hello?")
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"detail":"This phone is not paired."}"""))
