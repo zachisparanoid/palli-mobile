@@ -82,7 +82,7 @@ class SettingsWiringTest {
         val pairing = PairingRepository(ApiFactory(client), sessions, TimelineRepository(db, OutgoingFiles(context)), work,
             MediaCaches(FileCache(context, client, sessions), ImageLoader.Builder(context).build()))
         awaiting { sessions.save(Session(server.url("/").toString().trimEnd('/'), "pmd_test", 1, "Phone")) }
-        SendWorker.enqueue(work, "c1")
+        SendWorker.enqueue(work)
         vm = SettingsViewModel(sessions, prefs, pairing)         // the @Inject constructor
     }
 

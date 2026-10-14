@@ -12,6 +12,7 @@ import com.palli.mobile.sync.AppForeground
 import com.palli.mobile.sync.CatchUpWorker
 import com.palli.mobile.sync.ConnectionController
 import com.palli.mobile.sync.Notifier
+import com.palli.mobile.sync.SendWorker
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,13 +42,15 @@ class PalliApp : Application(), Configuration.Provider {
             sessions.load()
             controller.install()
         }
+        val work = WorkManager.getInstance(this)
+        SendWorker.forgetOldWork(work)                     // an earlier build's per-send works would send out of turn
         scope.launch { resumeUnsettledSends() }
-        CatchUpWorker.schedule(WorkManager.getInstance(this))
+        CatchUpWorker.schedule(work)
     }
 
     /**
-     * A send's row and its work are not written atomically, and a process death mid-send leaves a SENDING row with no
-     * work behind it. Schedule every owed send again. Best effort: an Exception is logged and the rows wait for the next
+     * A send's row and the drain are not scheduled atomically, and a process death mid-send leaves a SENDING row with no
+     * work behind it. Drain every owed send again. Best effort: an Exception is logged and the rows wait for the next
      * start, but an Error is not caught here (nor by the scope), so it still crashes visibly.
      */
     private suspend fun resumeUnsettledSends() {

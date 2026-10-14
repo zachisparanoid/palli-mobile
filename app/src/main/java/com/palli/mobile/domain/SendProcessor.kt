@@ -13,27 +13,56 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
 import javax.inject.Inject
 
-/** One attempt at one send. A retry reuses the same client id, so PaLLi never starts a second turn for it. */
+/**
+ * The queue's sending: one attempt at one send ([process]), and the drain that sends every owed one in turn ([drain]).
+ * A retry reuses the same client id, so PaLLi never starts a second turn for it.
+ */
 class SendProcessor @Inject constructor(
     private val pending: PendingSendDao,
     private val sessions: SessionStore,
     private val apis: ApiFactory,
     private val unpairer: Unpairer,
 ) {
-    enum class Outcome { DONE, RETRY }
+    /** DONE: this send is settled (accepted, failed for good, or gone). RETRY: trouble that may pass; it is queued again. UNPAIRED: nothing can be sent. */
+    enum class Outcome { DONE, RETRY, UNPAIRED }
+
+    /**
+     * Sends every send owed to PaLLi, oldest first (`createdAt`, then client id), one at a time, looking at the queue
+     * again after each, so a send written meanwhile is taken in its turn. A send that fails for good is marked so and
+     * the next goes; trouble that may pass stops the drain (RETRY) with the rest waiting behind it, in order.
+     *
+     * A SENDING row is owed too: only one drain runs at a time, so one it finds was left mid-flight by a process that
+     * died, and it goes in its turn rather than after the sends written later. A send is tried at most once per drain.
+     */
+    suspend fun drain(): Outcome {
+        val tried = HashSet<String>()
+        while (true) {
+            val next = pending.idsIn(OWED).firstOrNull { it !in tried } ?: return Outcome.DONE
+            tried += next
+            val outcome = process(next)
+            if (outcome != Outcome.DONE) return outcome
+        }
+    }
 
     suspend fun process(clientId: String): Outcome {
         val send = pending.get(clientId) ?: return Outcome.DONE                 // already settled
         if (send.state == SendStates.ACCEPTED || send.state == SendStates.FAILED) return Outcome.DONE
-        val session = sessions.current ?: sessions.load() ?: return Outcome.DONE
-        if (send.attachments().any { !File(it.path).isFile }) {
+        val session = sessions.current ?: sessions.load() ?: return Outcome.UNPAIRED
+        // A row this build cannot read back would otherwise throw at every try, and hold every send behind it for ever.
+        val attachments = try {
+            send.attachments()
+        } catch (e: IllegalArgumentException) {                               // SerializationException is one
+            pending.setState(clientId, SendStates.FAILED, UNREADABLE)
+            return Outcome.DONE
+        }
+        if (attachments.any { !File(it.path).isFile }) {
             pending.setState(clientId, SendStates.FAILED, "A file for this message is gone from the phone.")
             return Outcome.DONE
         }
         // The chat refuses these before queueing them; this holds for anything else (a row an older build wrote, the
         // notification's Reply). PaLLi would refuse it for good, and past 60 MB her early 413 can reach the phone as a
         // broken pipe, which would otherwise be retried for ever.
-        if (!SendLimits.fits(send.attachments().map { File(it.path).length() })) {
+        if (!SendLimits.fits(attachments.map { File(it.path).length() })) {
             pending.setState(clientId, SendStates.FAILED, TOO_BIG)
             return Outcome.DONE
         }
@@ -50,7 +79,7 @@ class SendProcessor @Inject constructor(
             is ApiError.TooLarge, is ApiError.Rejected -> {
                 pending.setState(clientId, SendStates.FAILED, error.message); Outcome.DONE
             }
-            is ApiError.Unauthorized -> { unpairer.unpaired("This phone was unpaired."); Outcome.DONE }
+            is ApiError.Unauthorized -> { unpairer.unpaired("This phone was unpaired."); Outcome.UNPAIRED }
             else -> { pending.setState(clientId, SendStates.QUEUED, null); Outcome.RETRY }
         }
     }
@@ -58,6 +87,8 @@ class SendProcessor @Inject constructor(
     companion object {
         const val TOO_BIG = "Too big to send: over 20 MB for one file, or 60 MB in all."
         const val TEXT_TOO_LONG = "Too long to send as a message: over 64 KB of words."
+        const val UNREADABLE = "This message could not be read back on the phone."
+        private val OWED = listOf(SendStates.QUEUED, SendStates.SENDING)
 
         fun buildParts(send: PendingSendEntity): List<MultipartBody.Part> = buildList {
             add(MultipartBody.Part.createFormData("client_id", send.clientId))

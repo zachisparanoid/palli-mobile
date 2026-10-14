@@ -105,7 +105,7 @@ class PairingRepositoryTest {
         db.events().insertAll(listOf(EventEntity.from(EventDto(id = 1, kind = EventKinds.MESSAGE, at = 1.0, text = "hi"))))
         db.pendingSends().upsert(PendingSendEntity("c1", "hello", "[]", SendStates.QUEUED, null, 1, 0))
         File(outgoing.dirFor("c1"), "cat.jpg").writeBytes(byteArrayOf(1, 2, 3))
-        SendWorker.enqueue(work, "c1")
+        SendWorker.enqueue(work)
         // Her files as they sit on the phone: a fetched file, and a picture in each of Coil's caches.
         herFolder.mkdirs()
         File(herFolder, "f-voice").writeText("OggS-voice")

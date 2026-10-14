@@ -155,7 +155,7 @@ class SendProcessorTest {
     @Test fun `a revoked phone unpairs instead of retrying`() = runTest {
         queue("c-4", "hello?")
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"detail":"This phone is not paired."}"""))
-        assertEquals(SendProcessor.Outcome.DONE, processor.process("c-4"))
+        assertEquals(SendProcessor.Outcome.UNPAIRED, processor.process("c-4"))
         assertEquals(listOf<String?>("This phone was unpaired."), unpaired)
     }
 
