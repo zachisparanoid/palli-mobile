@@ -1,0 +1,51 @@
+package com.palli.mobile.data.session
+
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>) {
+    data class Stored(val baseUrl: String?, val deviceId: Long?, val deviceName: String?, val tokenBlob: String?)
+
+    private object Keys {
+        val BASE_URL = stringPreferencesKey("base_url")
+        val DEVICE_ID = longPreferencesKey("device_id")
+        val DEVICE_NAME = stringPreferencesKey("device_name")
+        val TOKEN_BLOB = stringPreferencesKey("token_blob")
+        val STAY_CONNECTED = booleanPreferencesKey("stay_connected")
+        val ASKED_BATTERY = booleanPreferencesKey("asked_battery")
+    }
+
+    suspend fun read(): Stored = store.data.first().let {
+        Stored(it[Keys.BASE_URL], it[Keys.DEVICE_ID], it[Keys.DEVICE_NAME], it[Keys.TOKEN_BLOB])
+    }
+
+    suspend fun write(baseUrl: String, deviceId: Long, deviceName: String, tokenBlob: String) {
+        store.edit {
+            it[Keys.BASE_URL] = baseUrl; it[Keys.DEVICE_ID] = deviceId
+            it[Keys.DEVICE_NAME] = deviceName; it[Keys.TOKEN_BLOB] = tokenBlob
+        }
+    }
+
+    suspend fun clearPairing() {
+        store.edit {
+            it.remove(Keys.BASE_URL); it.remove(Keys.DEVICE_ID); it.remove(Keys.DEVICE_NAME); it.remove(Keys.TOKEN_BLOB)
+        }
+    }
+
+    /** On by default: the persistent connection is how her messages arrive at once. */
+    val stayConnected: Flow<Boolean> = store.data.map { it[Keys.STAY_CONNECTED] ?: true }
+    suspend fun setStayConnected(on: Boolean) { store.edit { it[Keys.STAY_CONNECTED] = on } }
+
+    suspend fun askedBattery(): Boolean = store.data.first()[Keys.ASKED_BATTERY] ?: false
+    suspend fun markAskedBattery() { store.edit { it[Keys.ASKED_BATTERY] = true } }
+}
