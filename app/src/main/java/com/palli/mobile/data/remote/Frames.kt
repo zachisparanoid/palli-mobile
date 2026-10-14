@@ -20,15 +20,22 @@ object Frames {
 
     fun ack(through: Long): String = """{"type":"ack","through":$through}"""
 
-    /** Null for anything that is not a JSON object with a type; Unknown for a type this app predates. */
+    /**
+     * Null for anything that is not a JSON object with a type, and for a frame whose fields do not fit the
+     * contract (the connection loop calls this on every frame, so it must not throw); Unknown for a type this app predates.
+     */
     fun decode(text: String): ServerFrame? {
         val obj: JsonObject = runCatching { Wire.json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
-        return when (val type = obj["type"]?.jsonPrimitive?.contentOrNull) {
-            null -> null
-            "event" -> obj["event"]?.let { ServerFrame.Event(Wire.json.decodeFromJsonElement(EventDto.serializer(), it)) }
-            "typing" -> ServerFrame.Typing(obj["on"]?.jsonPrimitive?.booleanOrNull ?: false)
-            "ping" -> ServerFrame.Ping
-            else -> ServerFrame.Unknown(type)
+        return try {
+            when (val type = obj["type"]?.jsonPrimitive?.contentOrNull) {
+                null -> null
+                "event" -> obj["event"]?.let { ServerFrame.Event(Wire.json.decodeFromJsonElement(EventDto.serializer(), it)) }
+                "typing" -> ServerFrame.Typing(obj["on"]?.jsonPrimitive?.booleanOrNull ?: false)
+                "ping" -> ServerFrame.Ping
+                else -> ServerFrame.Unknown(type)
+            }
+        } catch (e: IllegalArgumentException) {
+            null // SerializationException is a subclass: a missing or mistyped field, or a null where an object belongs
         }
     }
 }

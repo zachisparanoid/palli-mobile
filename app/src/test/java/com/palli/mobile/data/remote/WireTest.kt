@@ -35,6 +35,14 @@ class WireTest {
         assertNull(Frames.decode("not json"))
     }
 
+    @Test fun `malformed frames decode to nothing instead of throwing`() {
+        assertNull(Frames.decode("""{"type":"event","event":{"id":1}}"""))
+        assertNull(Frames.decode("""{"type":"event","event":null}"""))
+        assertNull(Frames.decode("""{"type":"event"}"""))
+        assertNull(Frames.decode("""{"type":{}}"""))
+        assertNull(Frames.decode("""{"type":"typing","on":[]}"""))
+    }
+
     @Test fun `client frames are the exact strings the backend reads`() {
         assertEquals("""{"type":"ack","through":42}""", Frames.ack(42))
         assertEquals("""{"type":"typing"}""", Frames.TYPING)
