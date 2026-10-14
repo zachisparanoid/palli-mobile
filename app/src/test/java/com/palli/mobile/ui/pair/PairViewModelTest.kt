@@ -28,13 +28,14 @@ class PairViewModelTest {
 
     private val calls = mutableListOf<Call>()
     private var answer: Result<Session> = Result.success(session)
+    private var answerWith: (() -> Throwable)? = null                // thrown from `pair` instead of answering
     private var hold: CompletableDeferred<Unit>? = null
 
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel() = PairViewModel(
-        pairWith = { baseUrl, code, name -> calls += Call(baseUrl, code, name); hold?.await(); answer },
+        pairWith = { baseUrl, code, name -> calls += Call(baseUrl, code, name); hold?.await(); answerWith?.let { throw it() }; answer },
         unpairedReason = MutableStateFlow(null),
         defaultDeviceName = "Pixel",
     )
@@ -66,7 +67,7 @@ class PairViewModelTest {
         assertFalse(vm.state.value.busy)
     }
 
-    @Test fun `cancelling never pairs and leaves the fields as they are`() {
+    @Test fun `cancelling never pairs and clears what the link filled in, so the Pair button cannot finish the job`() {
         val vm = viewModel()
         vm.onScanned(link)
         vm.cancelPair()
@@ -74,10 +75,23 @@ class PairViewModelTest {
 
         assertTrue(calls.isEmpty())
         val s = vm.state.value
-        assertNull(s.pendingAddress)
-        assertEquals(base, s.address)
-        assertEquals("K7QM2XPA", s.code)
+        assertNull(s.pending)
+        assertEquals("", s.address)
+        assertEquals("", s.code)
         assertNull(s.error)
+
+        vm.pair()                                                  // one tap on Pair afterwards: still nothing
+        assertTrue(calls.isEmpty())
+        assertEquals(PairErrors.ADDRESS_HINT, vm.state.value.error)
+    }
+
+    @Test fun `cancelling with no question up leaves what was typed by hand`() {
+        val vm = viewModel()
+        vm.onAddress(base)
+        vm.onCode("K7QM-2XPA")
+        vm.cancelPair()
+        assertEquals(base, vm.state.value.address)
+        assertEquals("K7QM-2XPA", vm.state.value.code)
     }
 
     @Test fun `confirming with nothing pending pairs nothing`() {
@@ -110,17 +124,29 @@ class PairViewModelTest {
         assertEquals("ABCDEFGH", calls[0].code)
     }
 
-    @Test fun `editing the address or code takes the question away, since the dialog would now name the wrong place`() {
+    @Test fun `yes pairs exactly what the question showed, whatever the form says by then`() {
         val vm = viewModel()
         vm.onScanned(link)
-        vm.onAddress("http://100.64.0.7:8000")
-        assertNull(vm.state.value.pendingAddress)
-        vm.confirmPair()
-        assertTrue(calls.isEmpty())
-
-        vm.onScanned(link)
+        vm.onAddress("http://100.64.0.7:8000")                     // not reachable from the dialog, but must not matter
         vm.onCode("ABCD-EFGH")
-        assertNull(vm.state.value.pendingAddress)
+        assertEquals(base, vm.state.value.pendingAddress)
+
+        vm.confirmPair()
+        assertEquals(1, calls.size)
+        assertEquals(base, calls[0].baseUrl)
+        assertEquals("K7QM2XPA", calls[0].code)
+    }
+
+    @Test fun `a link that is not in canonical form is asked about, and paired with, in the canonical form`() {
+        val vm = viewModel()
+        vm.onScanned("Palli://pair?u=HTTP%3A%2F%2FPalli-Box.Example.ts.net%3A8000%2Fpalli%2F&c=k7qm-2xpa")
+
+        val shown = vm.state.value.pendingAddress
+        assertEquals("http://palli-box.example.ts.net:8000/palli", shown)
+        vm.confirmPair()
+        assertEquals(1, calls.size)
+        assertEquals(shown, calls[0].baseUrl)
+        assertEquals("K7QM2XPA", calls[0].code)
     }
 
     @Test fun `typing the address and code pairs on the button, with no question`() {
@@ -143,6 +169,7 @@ class PairViewModelTest {
         vm.onAddress("http:")
         vm.pair()
         assertEquals("Enter PaLLi's address, like http://your-host.your-tailnet.ts.net:8000.", vm.state.value.error)
+        assertEquals(PairErrors.ADDRESS_HINT, vm.state.value.error)
 
         vm.onAddress(base)
         vm.onCode("K7QM")
@@ -158,6 +185,29 @@ class PairViewModelTest {
         vm.confirmPair()
 
         assertTrue(vm.state.value.error!!.startsWith("That code expired"))
+        assertFalse(vm.state.value.busy)
+    }
+
+    @Test fun `an address Retrofit refuses is an error on the form, not a crash`() {
+        // What Retrofit.Builder().baseUrl(...) throws for a port out of range or a base URL with a query.
+        answerWith = { IllegalArgumentException("Invalid URL port: \"99999\"") }
+        val vm = viewModel()
+        vm.onAddress(base)
+        vm.onCode("K7QM-2XPA")
+        vm.pair()
+
+        assertEquals(1, calls.size)
+        assertEquals(PairErrors.ADDRESS_HINT, vm.state.value.error)
+        assertFalse(vm.state.value.busy)
+    }
+
+    @Test fun `any other exception thrown while pairing is shown too, and the form is free again`() {
+        answerWith = { IllegalStateException("boom") }
+        val vm = viewModel()
+        vm.onScanned(link)
+        vm.confirmPair()
+
+        assertEquals("Pairing failed: boom", vm.state.value.error)
         assertFalse(vm.state.value.busy)
     }
 

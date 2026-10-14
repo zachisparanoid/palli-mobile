@@ -1,5 +1,7 @@
 package com.palli.mobile.data.pairing
 
+import com.palli.mobile.data.remote.ApiFactory
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -75,5 +77,38 @@ class PairingLinksTest {
     @Test fun `a link with a broken escape is null, not a crash`() {
         assertNull(PairingLinks.parse("palli://pair?u=%zz&c=K7QM2XPA"))
         assertNull(PairingLinks.parse("palli://pair?u=http%3A%2F%2F100.64.0.7&c=%"))
+    }
+
+    @Test fun `an address Retrofit would throw on is not accepted`() {
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:0"))
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:99999"))
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:65536"))
+        assertNull(PairingLinks.normalizeBaseUrl("palli-box.example.ts.net:99999"))
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:8000/x?y=1"))
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:8000?y=1"))
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:8000?"))
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:8000#frag"))
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net:8000/x#frag"))
+        assertNull(PairingLinks.parse("palli://pair?u=http%3A%2F%2F100.64.0.7%3A99999&c=K7QM2XPA"))
+        assertNull(PairingLinks.parse("palli://pair?u=http%3A%2F%2F100.64.0.7%3A8000%2Fx%3Fy%3D1&c=K7QM2XPA"))
+        // the ends of the range are real ports
+        assertEquals("http://100.64.0.7:65535", PairingLinks.normalizeBaseUrl("100.64.0.7:65535"))
+        assertEquals("http://100.64.0.7:1", PairingLinks.normalizeBaseUrl("100.64.0.7:1"))
+    }
+
+    @Test fun `whatever is accepted, the app can build its API for it`() {
+        val apis = ApiFactory(OkHttpClient())
+        val typed = listOf(
+            "palli-box.example.ts.net", "palli-box.example.ts.net:8000", "100.64.0.7:65535", "http://100.64.0.7:1/",
+            "[::1]:8000", "HTTPS://Palli-Box.Example.ts.net:443/", "http://palli-box.example.ts.net/palli//",
+            "http://palli-box.example.ts.net:", "http://palli-box.example.ts.net:8000/a/b/c/",
+            "http://palli-box.example.ts.net:99999", "http://palli-box.example.ts.net:8000/x?y=1", "http://100.64.0.7:0",
+            "http://palli-box.example.ts.net#frag", "100.64.0.7:8000/%zz", "http://palli-box.example.ts.net:8000/a b",
+        )
+        for (input in typed) {
+            val address = PairingLinks.normalizeBaseUrl(input) ?: continue
+            apis.forBase(address)                                  // throws IllegalArgumentException if Retrofit refuses it
+        }
+        assertEquals(9, typed.count { PairingLinks.normalizeBaseUrl(it) != null })
     }
 }

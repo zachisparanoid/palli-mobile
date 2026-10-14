@@ -98,15 +98,15 @@ class PairLinkNavigationTest {
         assertAbsent(question)
     }
 
-    @Test fun `a link opened from elsewhere asks first, and cancel leaves the form filled and nothing sent`() {
+    @Test fun `a link opened from elsewhere asks first, and cancel clears what it filled in and sends nothing`() {
         launch(link)
         waitFor(question)
         compose.onNodeWithText("Cancel").performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText(question).fetchSemanticsNodes().isEmpty() }
 
         compose.onNodeWithText("Pair with PaLLi").assertIsDisplayed()
-        compose.onNode(hasText(address)).assertExists()                // the fields keep what the link filled in
-        compose.onNode(hasText("K7QM2XPA")).assertExists()
+        assertAbsent(address)                                          // the address and code the link filled in are gone
+        assertAbsent("K7QM2XPA")
         assertAbsent("Can't reach PaLLi")                              // and nothing was tried
     }
 

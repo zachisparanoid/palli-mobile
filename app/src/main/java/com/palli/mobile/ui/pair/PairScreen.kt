@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -73,7 +74,7 @@ fun PairScreen(initialLink: String?, onLinkConsumed: () -> Unit = {}, vm: PairVi
     }
 
     Column(
-        Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState()).padding(24.dp),
+        Modifier.fillMaxSize().systemBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Image(painterResource(R.drawable.palli_macaw), contentDescription = null,
@@ -85,7 +86,8 @@ fun PairScreen(initialLink: String?, onLinkConsumed: () -> Unit = {}, vm: PairVi
         Button(
             onClick = {
                 scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    .setPrompt("Scan PaLLi's pairing code").setBeepEnabled(false))
+                    .setPrompt("Scan PaLLi's pairing code").setBeepEnabled(false)
+                    .setOrientationLocked(false))
             },
             enabled = !state.busy, modifier = Modifier.fillMaxWidth(),
         ) {

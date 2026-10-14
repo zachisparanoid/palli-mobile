@@ -39,6 +39,12 @@
             </intent-filter>
         </activity>
 
+        <!-- zxing's scanner declares itself sensorLandscape; a phone is held upright to scan a QR code. -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="fullSensor"
+            tools:replace="android:screenOrientation" />
+
         <service
             android:name=".sync.ConnectionService"
             android:exported="false"

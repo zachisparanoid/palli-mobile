@@ -1,5 +1,6 @@
 package com.palli.mobile.data.pairing
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.net.URI
 import java.net.URLDecoder
 
@@ -35,7 +36,8 @@ object PairingLinks {
     }
 
     /**
-     * `http://` added when there is no scheme; only http(s) with a host and no user-info; trailing slashes dropped;
+     * `http://` added when there is no scheme; only http(s) with a host, a real port and no user-info, query or
+     * fragment; trailing slashes dropped;
      * scheme and host lower-cased (both are case-insensitive, so `HTTP://Host` is the address `http://host`).
      * Validate first, trim last: trimming first would eat the slashes of a half-typed `http://`.
      *
@@ -54,6 +56,12 @@ object PairingLinks {
         val host = uri.host
         if (scheme !in setOf("http", "https") || host.isNullOrEmpty() || uri.userInfo != null) return null
         val afterHost = withScheme.substring(scheme.length + "://".length + host.length)
-        return "$scheme://${host.lowercase()}$afterHost".trimEnd('/')
+        val address = "$scheme://${host.lowercase()}$afterHost".trimEnd('/')
+        // The URL class the app really connects with has the last word. Retrofit throws on a port outside 1..65535
+        // and on a base URL that carries a query or fragment ("baseUrl must end in /"), and an accepted address
+        // must never be one that crashes the app when it is used.
+        val url = address.toHttpUrlOrNull() ?: return null
+        if (url.encodedQuery != null || url.encodedFragment != null) return null
+        return address
     }
 }
