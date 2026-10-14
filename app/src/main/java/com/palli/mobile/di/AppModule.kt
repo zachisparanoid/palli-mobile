@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.room.Room
+import androidx.work.WorkManager
 import com.palli.mobile.BuildConfig
 import com.palli.mobile.data.local.EventDao
 import com.palli.mobile.data.local.PalliDatabase
@@ -39,6 +40,9 @@ object AppModule {
     @Provides fun pendingSendDao(db: PalliDatabase): PendingSendDao = db.pendingSends()
 
     @Provides @Singleton fun tokenCipher(): TokenCipher = KeystoreTokenCipher()
+
+    @Provides @Singleton
+    fun workManager(@ApplicationContext context: Context): WorkManager = WorkManager.getInstance(context)
 
     @Provides @Singleton
     fun okHttp(sessions: SessionStore): OkHttpClient = OkHttpClient.Builder()

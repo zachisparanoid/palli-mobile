@@ -1,0 +1,43 @@
+package com.palli.mobile.domain
+
+import androidx.work.WorkManager
+import com.palli.mobile.data.remote.ApiError
+import com.palli.mobile.data.remote.ApiFactory
+import com.palli.mobile.data.remote.PairRequest
+import com.palli.mobile.data.remote.Wire
+import com.palli.mobile.data.remote.apiCall
+import com.palli.mobile.data.session.Session
+import com.palli.mobile.data.session.SessionStore
+import com.palli.mobile.sync.SendWorker
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class PairingRepository @Inject constructor(
+    private val apis: ApiFactory,
+    private val sessions: SessionStore,
+    private val timeline: TimelineRepository,
+    private val work: WorkManager,
+) : Unpairer {
+    suspend fun pair(baseUrl: String, code: String, deviceName: String): Result<Session> = apiCall {
+        val paired = apis.forBase(baseUrl).pair(PairRequest(code, deviceName))
+        if (paired.apiVersion != Wire.API_VERSION) {
+            throw ApiError.Rejected(
+                "This PaLLi speaks version ${paired.apiVersion} and this app speaks ${Wire.API_VERSION}. Update the older one.")
+        }
+        timeline.clear()                                   // never mix two servers' conversations
+        Session(baseUrl, paired.token, paired.deviceId, deviceName).also { sessions.save(it) }
+    }
+
+    /** He chose to unpair: tell PaLLi (best effort — she may be unreachable), then forget everything here. */
+    suspend fun unpairThisPhone() {
+        sessions.current?.let { s -> apiCall { apis.forBase(s.baseUrl).revoke(s.deviceId) } }
+        unpaired(null)
+    }
+
+    override suspend fun unpaired(reason: String?) {
+        work.cancelAllWorkByTag(SendWorker.TAG)
+        timeline.clear()
+        sessions.clear(reason)
+    }
+}
