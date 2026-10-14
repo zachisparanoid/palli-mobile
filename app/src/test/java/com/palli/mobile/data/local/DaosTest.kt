@@ -64,4 +64,21 @@ class DaosTest {
         assertEquals(listOf("bad"), dao.idsIn(listOf(SendStates.FAILED)))
         assertEquals(emptyList<String>(), dao.idsIn(emptyList()))
     }
+
+    @Test fun `moveIf moves a send only while it is still in one of the asked states`() = runTest {
+        val dao = db.pendingSends()
+        dao.upsert(PendingSendEntity("out", "a", "[]", SendStates.SENDING, null, 1L, 1))
+        dao.upsert(PendingSendEntity("done", "b", "[]", SendStates.ACCEPTED, null, 2L, 1))
+        dao.upsert(PendingSendEntity("bad", "c", "[]", SendStates.FAILED, "too large", 3L, 1))
+        val owed = listOf(SendStates.QUEUED, SendStates.SENDING)
+
+        assertEquals(1, dao.moveIf("out", owed, SendStates.QUEUED))
+        assertEquals(SendStates.QUEUED, dao.get("out")!!.state)
+        assertEquals(1, dao.moveIf("out", owed, SendStates.QUEUED))                  // already queued still counts: it is owed
+        assertEquals(0, dao.moveIf("done", owed, SendStates.QUEUED))
+        assertEquals(0, dao.moveIf("bad", owed, SendStates.QUEUED))
+        assertEquals(0, dao.moveIf("nobody", owed, SendStates.QUEUED))
+        assertEquals(SendStates.ACCEPTED, dao.get("done")!!.state)
+        assertEquals(SendStates.FAILED, dao.get("bad")!!.state); assertEquals("too large", dao.get("bad")!!.failure)
+    }
 }

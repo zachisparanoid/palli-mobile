@@ -33,6 +33,9 @@ interface PendingSendDao {
     /** The ids of the sends in any of these states, oldest first. */
     @Query("SELECT clientId FROM pending_sends WHERE state IN (:states) ORDER BY createdAt, clientId")
     suspend fun idsIn(states: List<String>): List<String>
+    /** Moves the send to `to` only if it is still in one of the `from` states; returns the rows changed (0 if it settled meanwhile). */
+    @Query("UPDATE pending_sends SET state = :to WHERE clientId = :clientId AND state IN (:from)")
+    suspend fun moveIf(clientId: String, from: List<String>, to: String): Int
     @Query("DELETE FROM pending_sends WHERE clientId IN (:clientIds)") suspend fun deleteAll(clientIds: List<String>)
     @Query("DELETE FROM pending_sends") suspend fun clear()
 }

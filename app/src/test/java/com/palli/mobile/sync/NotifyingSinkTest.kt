@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -103,5 +104,25 @@ class NotifyingSinkTest {
         assertEquals("Reply", action.title.toString())
         assertNotNull(action.remoteInputs.single())
         assertEquals(Notifier.REPLY_KEY, action.remoteInputs.single().resultKey)
+    }
+
+    private fun onlyAlertsOnce(): Boolean = conversation()!!.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0
+
+    @Test fun `her messages alert each time, and your own reply never does`() = runTest {
+        sink.onNewEvents(listOf(hers(1, "one")))
+        assertFalse(onlyAlertsOnce())
+        notifier.addMyReply("on my way")
+        assertTrue(onlyAlertsOnce())                                // the reply update is silent
+        sink.onNewEvents(listOf(hers(2, "two")))
+        assertFalse(onlyAlertsOnce())                               // and she is heard again after it
+    }
+
+    @Test fun `the connection notification follows the connection`() {
+        fun title() = shadowOf(system).getNotification(null, Notifier.ID_CONNECTION)!!.extras.getString(Notification.EXTRA_TITLE)
+        ConnState.entries.forEach { state ->
+            notifier.showConnection(state)
+            assertEquals(Notifier.connectionTitle(state), title())
+        }
+        assertEquals(1, shadowOf(system).allNotifications.size)     // one notification, re-posted, not a new one each time
     }
 }

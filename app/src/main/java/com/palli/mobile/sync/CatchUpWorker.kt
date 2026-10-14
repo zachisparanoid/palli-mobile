@@ -22,8 +22,8 @@ class CatchUpWorker @AssistedInject constructor(
     private val controller: ConnectionController,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        val done = processor.run()
-        controller.reassert()
+        // The restart is the backstop for a killed service, so it happens however the catch-up ends.
+        val done = try { processor.run() } finally { controller.reassert() }
         return if (done) Result.success() else Result.retry()
     }
 

@@ -7,6 +7,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.palli.mobile.data.local.PalliDatabase
+import com.palli.mobile.data.local.PendingSendDao
 import com.palli.mobile.data.local.PendingSendEntity
 import com.palli.mobile.data.local.SendStates
 import com.palli.mobile.sync.SendWorker
@@ -72,5 +73,22 @@ class SendRepositoryTest {
         repo.resumeUnsettled()
         assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates("c1"))
         assertEquals(1, work.getWorkInfosByTag(SendWorker.TAG).get().size)
+    }
+
+    @Test fun `a send settled between the read and the write is not queued again or sent twice`() = runTest {
+        row("racing", SendStates.SENDING, createdAt = 1)
+        row("steady", SendStates.QUEUED, createdAt = 2)
+        val real = db.pendingSends()
+        // The ids are read, then a running SendWorker finishes "racing" before resume gets to write.
+        val dao = object : PendingSendDao by real {
+            override suspend fun idsIn(states: List<String>): List<String> =
+                real.idsIn(states).also { real.setState("racing", SendStates.ACCEPTED, null) }
+        }
+
+        SendRepository(dao, work).resumeUnsettled()
+
+        assertEquals(SendStates.ACCEPTED, real.get("racing")!!.state)                     // not dragged back to queued
+        assertEquals(emptyList<WorkInfo.State>(), workStates("racing"))                  // and no second send scheduled for it
+        assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates("steady"))
     }
 }

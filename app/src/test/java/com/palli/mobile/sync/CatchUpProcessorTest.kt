@@ -22,12 +22,14 @@ class CatchUpProcessorTest {
     @Before fun start() = server.start()
     @After fun stop() = server.shutdown()
 
+    private var sinkFailure: Throwable? = null
+
     private fun processor() = CatchUpProcessor(
         currentSession = { Session(server.url("/").toString().trimEnd('/'), "pmd_t", 1, "Phone") },
         apis = ApiFactory(OkHttpClient()),
         insertNew = { events -> events.filter { it.id !in stored }.also { fresh -> stored += fresh.map { it.id } } },
         maxId = { stored.maxOrNull() ?: 0L },
-        sink = object : EventSink { override suspend fun onNewEvents(events: List<EventDto>) { told += events.map { it.id } } },
+        sink = object : EventSink { override suspend fun onNewEvents(events: List<EventDto>) { told += events.map { it.id }; sinkFailure?.let { throw it } } },
         unpairer = object : Unpairer { override suspend fun unpaired(reason: String?) { unpaired += reason } },
     )
 
@@ -53,5 +55,15 @@ class CatchUpProcessorTest {
     @Test fun `an unreachable PaLLi asks to be retried later`() = runTest {
         server.shutdown()
         assertEquals(false, processor().run())
+    }
+
+    @Test fun `a notifier that throws does not abandon the catch-up, whose events are already stored`() = runTest {
+        sinkFailure = IllegalStateException("notification channel gone")
+        server.enqueue(page(listOf(1, 2), more = true))
+        server.enqueue(page(listOf(3), more = false))
+        assertEquals(true, processor().run())
+        assertEquals(listOf(1L, 2L, 3L), stored)                   // stored before the sink was told
+        assertEquals(listOf(1L, 2L, 3L), told)                     // and the second page was still fetched and told
+        assertEquals(2, server.requestCount)
     }
 }

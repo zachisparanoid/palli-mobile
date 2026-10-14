@@ -36,11 +36,17 @@ class SendRepository @Inject constructor(
     /**
      * At app start: gives every send still owed to PaLLi its work again. Writing the row and scheduling its work are not
      * one atomic step, so a process death between them (or in the middle of a send) leaves a QUEUED or SENDING row with
-     * nothing behind it. This goes through retry(): SENDING goes back to QUEUED, then the same unique work is
-     * scheduled. Work that is already there is kept, and a resend is safe because PaLLi dedupes by client id.
-     * FAILED and ACCEPTED rows are settled and left alone.
+     * nothing behind it. Each such row goes back to QUEUED and gets the same unique work retry() schedules. Work that is
+     * already there is kept, and a resend is safe because PaLLi dedupes by client id. FAILED and ACCEPTED rows are
+     * settled and left alone.
+     *
+     * The move is one conditional write per row, and the work is scheduled only when that write changed a row: a send
+     * that a running SendWorker settled after the ids were read is not dragged back to QUEUED or sent twice.
      */
     suspend fun resumeUnsettled() {
-        pending.idsIn(listOf(SendStates.QUEUED, SendStates.SENDING)).forEach { retry(it) }
+        val owed = listOf(SendStates.QUEUED, SendStates.SENDING)
+        for (clientId in pending.idsIn(owed)) {
+            if (pending.moveIf(clientId, from = owed, to = SendStates.QUEUED) > 0) SendWorker.enqueue(work, clientId)
+        }
     }
 }

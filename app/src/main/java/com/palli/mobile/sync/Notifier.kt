@@ -28,6 +28,14 @@ class Notifier @Inject constructor(@ApplicationContext private val context: Cont
         const val ID_CONVERSATION = 1
         const val ID_CONNECTION = 2
         const val REPLY_KEY = "reply"
+
+        /** What the quiet notification says for each state of the connection. It is "Connected" only while it is. */
+        fun connectionTitle(state: ConnState): String = when (state) {
+            ConnState.CONNECTED -> "Connected to PaLLi"
+            ConnState.CONNECTING -> "Connecting to PaLLi"
+            ConnState.WAITING -> "Reconnecting to PaLLi"
+            ConnState.IDLE -> "Not connected to PaLLi"
+        }
     }
 
     private val manager get() = NotificationManagerCompat.from(context)
@@ -47,42 +55,51 @@ class Notifier @Inject constructor(@ApplicationContext private val context: Cont
             })
     }
 
-    fun connectionNotification(): Notification =
+    /** The service's own notification. The service starts out connecting: it is posted before the first attempt. */
+    fun connectionNotification(state: ConnState = ConnState.CONNECTING): Notification =
         NotificationCompat.Builder(context, CHANNEL_CONNECTION)
             .setSmallIcon(R.drawable.ic_stat_palli)
-            .setContentTitle("Connected to PaLLi")
+            .setContentTitle(connectionTitle(state))
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setContentIntent(openApp())
             .build()
+
+    /** Re-posts the service's notification under the same id, so it follows the connection. */
+    @SuppressLint("MissingPermission")   // the service's own notification; without the permission the system just drops the update
+    fun showConnection(state: ConnState) = manager.notify(ID_CONNECTION, connectionNotification(state))
 
     @SuppressLint("MissingPermission")   // areNotificationsEnabled() is checked first
     fun post(events: List<EventDto>) {
         if (events.isEmpty() || !manager.areNotificationsEnabled()) return
         val style = activeStyle() ?: NotificationCompat.MessagingStyle(me)
         events.forEach { style.addMessage(lineFor(it), (it.at * 1000).toLong(), her) }
-        manager.notify(ID_CONVERSATION, conversation(style))
+        manager.notify(ID_CONVERSATION, conversation(style, alertAgain = true))
     }
 
-    /** Shows the inline reply in the thread, which also stops the reply button's spinner. */
+    /**
+     * Shows the inline reply in the thread, which also stops the reply button's spinner. The reply is your own words,
+     * so this update must not buzz the phone again: only-alert-once, for this update alone.
+     */
     @SuppressLint("MissingPermission")
     fun addMyReply(text: String) {
         if (!manager.areNotificationsEnabled()) return
         val style = activeStyle() ?: NotificationCompat.MessagingStyle(me)
         style.addMessage(text, System.currentTimeMillis(), null as Person?)
-        manager.notify(ID_CONVERSATION, conversation(style))
+        manager.notify(ID_CONVERSATION, conversation(style, alertAgain = false))
     }
 
     fun clearConversation() = manager.cancel(ID_CONVERSATION)
 
-    private fun conversation(style: NotificationCompat.MessagingStyle): Notification =
+    private fun conversation(style: NotificationCompat.MessagingStyle, alertAgain: Boolean): Notification =
         NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_palli)
             .setStyle(style)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentIntent(openApp())
             .setAutoCancel(true)
-            .setOnlyAlertOnce(false)
+            .setOnlyAlertOnce(!alertAgain)
             .addAction(replyAction())
             .build()
 
