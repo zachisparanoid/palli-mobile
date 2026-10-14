@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +31,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -54,6 +56,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.palli.mobile.domain.timeline.TimelineItem
+import com.palli.mobile.ui.battery.BatteryExemption
 import com.palli.mobile.ui.theme.PalliColors
 import java.io.File
 
@@ -81,14 +84,26 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
     // remembered on the phone (not just for this screen), so after a "no" a later start does not put it again; and it
     // is not put at all once notifications are allowed.
     val context = LocalContext.current
-    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    var notificationsSettled by remember { mutableStateOf(false) }
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        notificationsSettled = true
+    }
     LaunchedEffect(Unit) {
         val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         if (Build.VERSION.SDK_INT >= 33 && !allowed && vm.shouldAskNotifications()) {
             vm.notificationsAsked()
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            notificationsSettled = true
         }
+    }
+    // The battery question, once ever and only while Android is limiting the app; after the notification question has been
+    // answered, so the two are not put at once. Any way out of it (yes, not now, back) is the answer, written down on the
+    // phone so no later start puts it again. Settings has a button for asking again.
+    var askBattery by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(notificationsSettled) {
+        if (notificationsSettled && vm.shouldAskBattery(BatteryExemption.limited(context))) askBattery = true
     }
     // Photos, files, the camera and the microphone. What the system hands back goes to the view model, which refuses it
     // while sending is blocked. The camera's file is kept by path across a rebuilt activity: the camera app can outlive it.
@@ -230,6 +245,24 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
                 items(newestFirst, key = { it.key }) { Bubble(it, vm::retry, media) }
             }
         }
+    }
+    if (askBattery) {
+        AlertDialog(
+            onDismissRequest = { askBattery = false; vm.markAskedBattery() },
+            title = { Text("Get her messages at once?") },
+            text = {
+                Text("Android pauses apps in the background to save battery. Letting PaLLi run keeps one quiet connection open, " +
+                    "so her messages arrive the moment she sends them.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    askBattery = false
+                    vm.markAskedBattery()
+                    if (!BatteryExemption.ask(context)) vm.noAppForThat()
+                }) { Text("Allow") }
+            },
+            dismissButton = { TextButton(onClick = { askBattery = false; vm.markAskedBattery() }) { Text("Not now") } },
+        )
     }
 }
 

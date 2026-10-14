@@ -17,7 +17,8 @@ sealed class ApiError(message: String) : Exception(message) {
     data class Gone(val detail: String) : ApiError(detail)              // 410: an expired or used pair code
     data class TooLarge(val detail: String) : ApiError(detail)          // 413
     data class RateLimited(val detail: String) : ApiError(detail)       // 429
-    data class Rejected(val detail: String) : ApiError(detail)          // 422 and other 4xx
+    /** 422 and other 4xx. [status] is the HTTP status, 0 when this was not from a response: 404 is "no such thing". */
+    data class Rejected(val detail: String, val status: Int = 0) : ApiError(detail)
     data class DoorClosed(val reason: String) : ApiError(reason)        // 503 {"detail":{"reason":…}}
     data class Unreachable(val error: Throwable) : ApiError(error.message ?: "unreachable")
     data class Server(val code: Int, val detail: String) : ApiError(detail)
@@ -47,7 +48,7 @@ fun HttpException.toApiError(): ApiError {
         413 -> ApiError.TooLarge(sentence)
         429 -> ApiError.RateLimited(sentence)
         503 -> ApiError.DoorClosed(reason ?: "door_closed")
-        in 400..499 -> ApiError.Rejected(sentence)
+        in 400..499 -> ApiError.Rejected(sentence, code())
         else -> ApiError.Server(code(), sentence)
     }
 }

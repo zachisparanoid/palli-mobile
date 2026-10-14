@@ -1,5 +1,6 @@
 package com.palli.mobile.domain
 
+import android.util.Log
 import androidx.work.WorkManager
 import com.palli.mobile.data.remote.ApiError
 import com.palli.mobile.data.remote.ApiFactory
@@ -20,6 +21,7 @@ class PairingRepository @Inject constructor(
     private val sessions: SessionStore,
     private val timeline: TimelineRepository,
     private val work: WorkManager,
+    private val cached: CachedFiles,
 ) : Unpairer {
     suspend fun pair(baseUrl: String, code: String, deviceName: String): Result<Session> = apiCall {
         val paired = apis.forBase(baseUrl).pair(PairRequest(code, deviceName))
@@ -32,11 +34,16 @@ class PairingRepository @Inject constructor(
     }
 
     /** He chose to unpair: stop the queue so no in-flight send can 401 over his null reason, tell PaLLi
-     *  (best effort — she may be unreachable), then forget everything here. */
+     *  (best effort — she may be unreachable), then forget everything here.
+     *
+     *  All of it runs whole whatever the caller does: the screen that asked can be left, and its scope cancelled,
+     *  while she is still being told, and that must not leave the queue stopped but the session kept. */
     suspend fun unpairThisPhone() {
-        work.cancelAllWorkByTag(SendWorker.TAG)
-        sessions.current?.let { s -> apiCall { apis.forBase(s.baseUrl).revoke(s.deviceId) } }
-        unpaired(null)
+        withContext(NonCancellable) {
+            work.cancelAllWorkByTag(SendWorker.TAG)
+            sessions.current?.let { s -> apiCall { apis.forBase(s.baseUrl).revoke(s.deviceId) } }
+            unpaired(null)
+        }
     }
 
     /** The wipe comes first and cannot be cancelled: on the 401 path this runs inside a SendWorker, and
@@ -46,7 +53,18 @@ class PairingRepository @Inject constructor(
         withContext(NonCancellable) {
             timeline.clear()
             sessions.clear(reason)
+            clearHerFiles()
             work.cancelAllWorkByTag(SendWorker.TAG)
+        }
+    }
+
+    /** Her files (fetched for playing and saving, and the pictures Coil kept) must not outlive the pairing. Best effort:
+     *  a file that will not go must not keep the token or the queue, so it is logged (class name only) and the rest goes on. */
+    private suspend fun clearHerFiles() {
+        try {
+            cached.clear()
+        } catch (e: Exception) {
+            Log.w("PairingRepository", "her cached files could not all be cleared: ${e.javaClass.simpleName}")
         }
     }
 }

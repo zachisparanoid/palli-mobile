@@ -32,8 +32,17 @@ class FileCache @Inject constructor(
         return files.toHttpUrlOrNull()?.newBuilder()?.addPathSegment(id)?.build()?.toString() ?: (files + id)
     }
 
+    /** Where her fetched files are kept: one folder, so all of them can go at once. */
+    private val folder get() = File(context.cacheDir, "palli-files")
+
+    /** Forgets every file fetched so far (they are fetched again when wanted). Throws if the folder could not be removed. */
+    fun clear() {
+        val dir = folder
+        if (dir.exists() && !dir.deleteRecursively() && dir.exists()) throw IOException("Her cached files could not be removed.")
+    }
+
     suspend fun get(id: String): File = withContext(Dispatchers.IO) {
-        val dir = File(context.cacheDir, "palli-files").apply { mkdirs() }
+        val dir = folder.apply { mkdirs() }
         val target = File(dir, cacheName(id))
         if (target.isFile && target.length() > 0) return@withContext target
         val session = sessions.current ?: throw IOException("This phone is not paired.")

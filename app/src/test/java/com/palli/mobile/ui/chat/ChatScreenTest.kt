@@ -2,6 +2,8 @@ package com.palli.mobile.ui.chat
 
 import android.Manifest
 import android.app.Application
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
@@ -49,6 +51,7 @@ import com.palli.mobile.ui.theme.PalliTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import okhttp3.MultipartBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -75,6 +78,8 @@ class ChatScreenTest {
     private var retryFailure: Throwable? = null
     /** What the phone remembers between starts: whether the notification question has been put. */
     private var askedFlag = false
+    /** Likewise for the battery question. The tests that are not about it leave it as asked, so no dialog stands in their way. */
+    private var batteryAsked = true
 
     private class Api(val me: () -> MeResponse) : PalliApi {
         override suspend fun me() = me.invoke()
@@ -103,6 +108,8 @@ class ChatScreenTest {
             unpaired = { },
             askedNotifications = { askedFlag },
             markAskedNotifications = { askedFlag = true },
+            askedBattery = { batteryAsked },
+            saveAskedBattery = { batteryAsked = true },
             herTyping = herTyping,
             connection = connection,
             clock = { System.nanoTime() / 1_000_000 },
@@ -112,8 +119,10 @@ class ChatScreenTest {
     /** Stands in for the activity's registry, so what the screen asks the system for can be counted. */
     private class CountingRegistry : ActivityResultRegistry() {
         val asked = mutableListOf<Any?>()
+        val codes = mutableListOf<Int>()
         override fun <I, O> onLaunch(requestCode: Int, contract: ActivityResultContract<I, O>, input: I, options: ActivityOptionsCompat?) {
             asked += input
+            codes += requestCode
         }
     }
 
@@ -433,6 +442,105 @@ class ChatScreenTest {
         show()
         compose.waitForIdle()
         assertTrue(registry.asked.isEmpty())
+    }
+
+    // ---- the battery question ----
+
+    private val question = "Get her messages at once?"
+    private fun limitedByAndroid(limited: Boolean) =
+        shadowOf(app.getSystemService(PowerManager::class.java)).setIgnoringBatteryOptimizations(app.packageName, !limited)
+    private fun assertNoQuestion() = assertEquals(0, compose.onAllNodesWithText(question).fetchSemanticsNodes().size)
+
+    @Test fun `the first time the chat opens on a limited app it asks about the battery`() {
+        askedFlag = true
+        batteryAsked = false
+        limitedByAndroid(true)
+        show()
+        compose.waitForIdle()
+        compose.onNodeWithText(question).assertIsDisplayed()
+        assertEquals("asking does not mark it asked: it is the answer that does", false, batteryAsked)
+    }
+
+    @Test fun `allow takes him to the system's question for this app, and the question is not put again`() {
+        askedFlag = true
+        batteryAsked = false
+        limitedByAndroid(true)
+        show()
+        compose.waitForIdle()
+        compose.onNodeWithText("Allow").performClick()
+        compose.waitForIdle()
+
+        val asked = shadowOf(compose.activity).nextStartedActivity
+        assertEquals(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, asked.action)
+        assertEquals("package:${app.packageName}", asked.dataString)
+        assertNoQuestion()
+        assertEquals(true, batteryAsked)
+    }
+
+    @Test fun `not now is a no that is respected - it is written down, nothing is opened, and no later start asks again`() {
+        askedFlag = true
+        batteryAsked = false
+        limitedByAndroid(true)
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent { screen(remember { viewModel() })() }   // a rebuilt screen has a new view model, as a new process does
+        compose.waitForIdle()
+        compose.onNodeWithText("Not now").performClick()
+        compose.waitForIdle()
+
+        assertNoQuestion()
+        assertEquals(true, batteryAsked)
+        assertNull(shadowOf(compose.activity).nextStartedActivity)
+
+        restoration.emulateSavedInstanceStateRestore()
+        compose.waitForIdle()
+        assertNoQuestion()
+    }
+
+    @Test fun `a question that was never answered is put again when the screen is rebuilt`() {
+        askedFlag = true
+        batteryAsked = false
+        limitedByAndroid(true)
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent { screen(remember { viewModel() })() }
+        compose.waitForIdle()
+        compose.onNodeWithText(question).assertIsDisplayed()
+
+        restoration.emulateSavedInstanceStateRestore()                  // turned over with the question open
+        compose.waitForIdle()
+        compose.onNodeWithText(question).assertIsDisplayed()
+    }
+
+    @Test fun `an app Android is not limiting is not asked, and has not used up the question`() {
+        askedFlag = true
+        batteryAsked = false
+        limitedByAndroid(false)
+        show()
+        compose.waitForIdle()
+        assertNoQuestion()
+        assertEquals(false, batteryAsked)
+    }
+
+    @Test fun `a phone that has already been asked about the battery is not asked at the first sight of the chat`() {
+        askedFlag = true
+        batteryAsked = true
+        limitedByAndroid(true)
+        show()
+        compose.waitForIdle()
+        assertNoQuestion()
+    }
+
+    @Test fun `the battery question waits for the notification question to be answered`() {
+        askedFlag = false
+        batteryAsked = false
+        limitedByAndroid(true)
+        show()
+        compose.waitForIdle()
+        assertEquals(listOf<Any?>(Manifest.permission.POST_NOTIFICATIONS), registry.asked)
+        assertNoQuestion()                                              // the system's question is up
+
+        compose.runOnUiThread { registry.dispatchResult(registry.codes.single(), false) }   // he answered it (no)
+        compose.waitForIdle()
+        compose.onNodeWithText(question).assertIsDisplayed()
     }
 
     // ---- insets ----

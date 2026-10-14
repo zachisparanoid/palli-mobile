@@ -8,8 +8,10 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.palli.mobile.MainActivity
@@ -22,7 +24,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -183,5 +187,106 @@ class PairLinkNavigationTest {
         waitFor("Pair with PaLLi")
         assertNull(app.sessions.current)
         assertAbsent(chatHint)
+    }
+
+    // ---- Reminders and Settings: the other two places the chat leads to ----
+
+    private val remindersTitle = "Reminders"
+    private val settingsMark = "This phone: Pixel"                      // only Settings shows which phone this is
+
+    private fun openFromChat(button: String) {
+        pairThisPhone()
+        launch()
+        waitFor(chatHint)
+        compose.onNodeWithContentDescription(button).performClick()
+    }
+
+    /** Pair is the only screen left (the stack was cleared), so back finishes the activity instead of going to Settings or the chat. */
+    private fun assertBackLeavesTheApp() {
+        var finishing = false
+        scenario!!.onActivity { it.onBackPressedDispatcher.onBackPressed(); finishing = it.isFinishing }
+        assertTrue("back must leave the app, not go back to a screen of the old pairing", finishing)
+    }
+
+    private fun backFromHere() = compose.onNodeWithContentDescription("Back").performClick()
+
+    @Test fun `the Reminders button opens her reminders, and back comes back to the chat`() {
+        openFromChat("Reminders")
+        waitFor("Can't reach PaLLi right now. Is Tailscale on?")       // the closed port: it says so rather than claiming none
+        assertAbsent(chatHint)
+        compose.onNodeWithText(remindersTitle).assertIsDisplayed()
+
+        backFromHere()
+        waitFor(chatHint)
+        assertAbsent(remindersTitle)
+    }
+
+    @Test fun `the Settings button opens settings, and back comes back to the chat`() {
+        openFromChat("Settings")
+        waitFor(settingsMark)
+        assertAbsent(chatHint)
+
+        backFromHere()
+        waitFor(chatHint)
+        assertAbsent(settingsMark)
+    }
+
+    @Test fun `turning the phone over in Settings keeps it in Settings`() {
+        openFromChat("Settings")
+        waitFor(settingsMark)
+
+        scenario!!.recreate()
+        waitFor(settingsMark)
+        compose.waitForIdle()
+        assertAbsent(chatHint)
+    }
+
+    @Test fun `turning the phone over in Reminders keeps it in Reminders`() {
+        openFromChat("Reminders")
+        waitFor("Can't reach PaLLi right now. Is Tailscale on?")
+
+        scenario!!.recreate()
+        waitFor("Can't reach PaLLi right now. Is Tailscale on?")
+        compose.waitForIdle()
+        assertAbsent(chatHint)
+    }
+
+    @Test fun `a pairing link that reaches Settings while paired is ignored`() {
+        val session = openFromChat("Settings").let { app.sessions.current }
+        waitFor(settingsMark)
+        deliver(link)
+        compose.waitForIdle()
+        assertAbsent("Pair with PaLLi")
+        assertAbsent(question)
+        compose.onNodeWithText(settingsMark).assertIsDisplayed()
+        assertEquals(session, app.sessions.current)
+    }
+
+    @Test fun `losing the session in Settings goes to Pair with nothing left to go back to`() {
+        openFromChat("Settings")
+        waitFor(settingsMark)
+
+        unpairThisPhone()                                                // as a 4401 on the stream does
+        waitFor("Pair with PaLLi")
+        compose.onNodeWithText("This phone was unpaired.").assertIsDisplayed()
+        assertAbsent(settingsMark)
+        assertAbsent(chatHint)
+        assertBackLeavesTheApp()
+    }
+
+    @Test fun `unpairing from Settings asks first, then goes to Pair with nothing left to go back to`() {
+        openFromChat("Settings")
+        waitFor(settingsMark)
+
+        compose.onNodeWithText("Unpair this phone").performScrollTo().performClick()
+        waitFor("Unpair this phone?")
+        assertNotNull(app.sessions.current)                              // asking did not unpair
+
+        compose.onNode(hasText("Unpair") and hasAnyAncestor(isDialog())).performClick()
+        waitFor("Pair with PaLLi")                                       // she was told (the closed port refuses; best effort), then forgotten
+        assertNull(app.sessions.current)
+        assertAbsent(settingsMark)
+        assertAbsent(chatHint)
+        assertBackLeavesTheApp()
     }
 }

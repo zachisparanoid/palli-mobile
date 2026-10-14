@@ -76,6 +76,8 @@ class ChatViewModelTest {
     private var oldest: Long? = 100L
     private var asked = false
     private var askedFailure: Throwable? = null
+    private var batteryAsked = false
+    private var batteryAskedFailure: Throwable? = null
     private val herTyping = MutableStateFlow(false)
     private val connection = MutableStateFlow(ConnState.IDLE)
 
@@ -95,6 +97,8 @@ class ChatViewModelTest {
         unpaired = { reason -> unpaired += reason },
         askedNotifications = { askedFailure?.let { throw it }; asked },
         markAskedNotifications = { asked = true },
+        askedBattery = { batteryAskedFailure?.let { throw it }; batteryAsked },
+        saveAskedBattery = { batteryAsked = true },
         herTyping = herTyping,
         connection = connection,
         clock = { now },
@@ -527,6 +531,25 @@ class ChatViewModelTest {
     @Test fun `if the phone cannot say whether it has asked, it does not ask`() = runTest {
         askedFailure = java.io.IOException("datastore unreadable")
         assertEquals(false, viewModel().shouldAskNotifications())
+    }
+
+    // ---- the battery question ----
+
+    @Test fun `the battery question is put once, and only while Android is limiting the app`() = runTest {
+        val vm = viewModel()
+        assertEquals("not limited: nothing to ask", false, vm.shouldAskBattery(limited = false))
+        assertEquals(false, batteryAsked)                              // and not asking did not use up the one ask
+        assertEquals(true, vm.shouldAskBattery(limited = true))
+
+        vm.markAskedBattery()                                          // he said yes, no, or dismissed it
+        assertEquals(true, batteryAsked)
+        assertEquals(false, vm.shouldAskBattery(limited = true))
+        assertEquals(false, viewModel().shouldAskBattery(limited = true))   // a new screen, a new process: the phone remembers
+    }
+
+    @Test fun `if the phone cannot say whether it has asked about the battery, it does not ask`() = runTest {
+        batteryAskedFailure = java.io.IOException("datastore unreadable")
+        assertEquals(false, viewModel().shouldAskBattery(limited = true))
     }
 
     // ---- what the stream says ----

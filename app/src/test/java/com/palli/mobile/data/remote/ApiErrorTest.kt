@@ -37,6 +37,12 @@ class ApiErrorTest {
         assertTrue(meFails(500, "boom") is ApiError.Server)
     }
 
+    @Test fun `a refusal keeps the status it came with, so a missing thing can be told from a bad request`() = runTest {
+        assertEquals(ApiError.Rejected("Reminder not found", 404), meFails(404, """{"detail":"Reminder not found"}"""))
+        assertEquals(404, (meFails(404, "Not Found") as ApiError.Rejected).status)
+        assertEquals(422, (meFails(422, """{"detail":[{"msg":"bad"}]}""") as ApiError.Rejected).status)
+    }
+
     @Test fun `an odd error body never throws out of apiCall`() = runTest {
         // A gateway's envelope: the "error" is an object, not a sentence.
         assertTrue(meFails(500, """{"error":{}}""") is ApiError.Server)

@@ -98,6 +98,9 @@ class ChatViewModel(
     private val gate: SendGate = SendGate(),
     /** Where picked files are copied in. */
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Whether the battery question has been put; the default says it has, so a chat without it never asks. */
+    private val askedBattery: suspend () -> Boolean = { true },
+    private val saveAskedBattery: suspend () -> Unit = { },
 ) : ViewModel() {
     @Inject constructor(
         timeline: TimelineRepository,
@@ -134,6 +137,8 @@ class ChatViewModel(
         recorder = recorder,
         media = media,
         gate = gate,
+        askedBattery = prefs::askedBattery,
+        saveAskedBattery = prefs::markAskedBattery,
     )
 
     private val window = MutableStateFlow(FIRST_WINDOW)
@@ -452,6 +457,23 @@ class ChatViewModel(
 
     /** Call just before putting the question, so even a process that dies with it open does not ask it again. */
     suspend fun notificationsAsked() { logged("remembering the notification question") { markAskedNotifications() } }
+
+    /**
+     * Whether to put the battery question: only while Android is [limited] in limiting the app (an app it leaves alone has
+     * nothing to ask), and only if it has never been put, so a "no" stays one. Settings has its own way to ask again.
+     */
+    suspend fun shouldAskBattery(limited: Boolean): Boolean = limited && try {
+        !askedBattery()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        false                              // cannot tell: better not to ask than to ask again and again
+    }
+
+    /** The battery question was answered or dismissed: remember it on the phone, so no later start puts it again. */
+    fun markAskedBattery() {
+        viewModelScope.launch { withContext(NonCancellable) { logged("remembering the battery question") { saveAskedBattery() } } }
+    }
 
     /** The screen has shown [text]; forget it, unless a newer notice has already replaced it. */
     fun noticeShown(text: String) = _notice.update { if (it == text) null else it }

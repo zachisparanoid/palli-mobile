@@ -14,6 +14,8 @@ import androidx.navigation.compose.rememberNavController
 import com.palli.mobile.data.session.SessionStore
 import com.palli.mobile.ui.chat.ChatScreen
 import com.palli.mobile.ui.pair.PairScreen
+import com.palli.mobile.ui.reminders.RemindersScreen
+import com.palli.mobile.ui.settings.SettingsScreen
 
 object Routes {
     const val PAIR = "pair"
@@ -23,7 +25,8 @@ object Routes {
 }
 
 /**
- * Unpaired → Pair; paired → Chat. Losing the session anywhere (unpaired, revoked) comes back to Pair.
+ * Unpaired → Pair; paired → Chat (and from it Reminders and Settings). Losing the session anywhere (unpaired, revoked) comes
+ * back to Pair, with the back stack cleared.
  *
  * [pairLink] is a `palli://pair` link the app was opened with; the Pair screen takes it and calls [onPairLinkConsumed].
  * A link that arrives while this phone is already paired is dropped here, not kept: it neither unpairs, re-pairs nor
@@ -46,11 +49,15 @@ fun PalliNavHost(sessions: SessionStore, pairLink: String?, onPairLinkConsumed: 
         composable(Routes.CHAT) {
             ChatScreen(onReminders = { nav.navigate(Routes.REMINDERS) }, onSettings = { nav.navigate(Routes.SETTINGS) })
         }
+        composable(Routes.REMINDERS) { RemindersScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.SETTINGS) { SettingsScreen(onBack = { nav.popBackStack() }) }
     }
+    // Paired, only Pair is the wrong screen: Chat, Reminders and Settings are all the paired phone's, and this runs again
+    // when the activity is rebuilt (a turn of the phone) with the nav controller already back on Settings. Unpaired, the
+    // back stack is cleared, so back from Pair leaves the app and never returns to a screen of the old pairing.
     LaunchedEffect(paired) {
-        val target = if (paired) Routes.CHAT else Routes.PAIR
-        if (nav.currentDestination?.route != target) {
-            nav.navigate(target) { popUpTo(0) { inclusive = true } }
-        }
+        val route = nav.currentDestination?.route
+        val wrong = if (paired) route == Routes.PAIR else route != Routes.PAIR
+        if (wrong) nav.navigate(if (paired) Routes.CHAT else Routes.PAIR) { popUpTo(0) { inclusive = true } }
     }
 }
