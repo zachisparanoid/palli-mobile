@@ -21,15 +21,18 @@ import com.palli.mobile.ui.theme.PalliColors
  * Text only; Task 10 extends it. It is the screen's bottom bar, drawn edge to edge, so it keeps itself clear of both
  * system bars below it: the navigation bar and the keyboard. Each pads only by what the other has not already taken, so
  * they do not stack: the taller of the two is the room left under the composer.
+ *
+ * [enabled] is off while the app refuses to chat with this PaLLi (another api version): nothing can be typed or sent.
  */
 @Composable
-fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit) {
+fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit, enabled: Boolean = true) {
     Row(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(8.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(draft, onDraft, placeholder = { Text("Message PaLLi") }, maxLines = 5,
+        OutlinedTextField(draft, onDraft, enabled = enabled, placeholder = { Text("Message PaLLi") }, maxLines = 5,
             modifier = Modifier.weight(1f))
-        IconButton(onClick = onSend, enabled = draft.isNotBlank()) {
-            Icon(Icons.AutoMirrored.Outlined.Send, "Send", tint = if (draft.isNotBlank()) PalliColors.Accent else PalliColors.Faint)
+        val canSend = enabled && draft.isNotBlank()
+        IconButton(onClick = onSend, enabled = canSend) {
+            Icon(Icons.AutoMirrored.Outlined.Send, "Send", tint = if (canSend) PalliColors.Accent else PalliColors.Faint)
         }
     }
 }

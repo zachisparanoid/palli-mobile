@@ -74,6 +74,8 @@ class ChatViewModelTest {
     private var held: CompletableDeferred<Unit>? = null
     private var count = 0
     private var oldest: Long? = 100L
+    private var asked = false
+    private var askedFailure: Throwable? = null
     private val herTyping = MutableStateFlow(false)
     private val connection = MutableStateFlow(ConnState.IDLE)
 
@@ -91,6 +93,8 @@ class ChatViewModelTest {
         insertNew = { events -> insertFailure?.let { throw it }; stored += events.map { it.id }; events },
         api = { if (hasSession) api else null },
         unpaired = { reason -> unpaired += reason },
+        askedNotifications = { askedFailure?.let { throw it }; asked },
+        markAskedNotifications = { asked = true },
         herTyping = herTyping,
         connection = connection,
         clock = { now },
@@ -113,6 +117,21 @@ class ChatViewModelTest {
         assertEquals("hell", vm.draft.value)
     }
 
+    @Test fun `sending never types, so the only frames are the ones typing made`() {
+        val vm = viewModel()
+        vm.onDraft("hello")
+        assertEquals(listOf(10_000L), typingFrames)
+
+        now += 4_000                                                // well past the throttle, so a send that typed would be heard
+        vm.send()
+        assertEquals(listOf(10_000L), typingFrames)
+        assertEquals(listOf("hello"), queued)
+
+        now += 4_000
+        vm.send()                                                   // nothing to send: still silent
+        assertEquals(listOf(10_000L), typingFrames)
+    }
+
     // ---- sending ----
 
     @Test fun `send trims, clears the draft and queues the text once`() {
@@ -133,26 +152,48 @@ class ChatViewModelTest {
         assertEquals("   ", vm.draft.value)
     }
 
-    @Test fun `a message that could not be queued comes back to the composer`() {
+    @Test fun `a message that could not be queued comes back to the composer, and says so`() {
         enqueueFailure = IllegalStateException("disk full")
         val vm = viewModel()
         vm.onDraft("keep me")
         vm.send()
         assertEquals("keep me", vm.draft.value)
         assertTrue(queued.isEmpty())
+        assertEquals(ChatViewModel.SEND_FAILED_KEPT, vm.notice.value)
     }
 
-    @Test fun `a message that could not be queued does not overwrite what was typed since`() {
+    @Test fun `a message that could not be queued does not overwrite what was typed since, and says it was not kept`() {
         enqueueFailure = IllegalStateException("disk full")
         held = CompletableDeferred()
         val vm = viewModel()
         vm.onDraft("first")
         vm.send()
         assertEquals("", vm.draft.value)
+        assertNull(vm.notice.value)
         vm.onDraft("second")
 
         held!!.complete(Unit)                                      // now the first one fails
         assertEquals("second", vm.draft.value)
+        assertEquals(ChatViewModel.SEND_FAILED_LOST, vm.notice.value)
+    }
+
+    @Test fun `a send that went through says nothing and is not given back`() {
+        val vm = viewModel()
+        vm.onDraft("fine")
+        vm.send()
+        assertEquals("", vm.draft.value)
+        assertNull(vm.notice.value)
+    }
+
+    @Test fun `a notice is forgotten once shown, unless a newer one has replaced it`() {
+        enqueueFailure = IllegalStateException("disk full")
+        val vm = viewModel()
+        vm.onDraft("a"); vm.send()
+        vm.noticeShown("something else entirely")
+        assertEquals(ChatViewModel.SEND_FAILED_KEPT, vm.notice.value)
+
+        vm.noticeShown(ChatViewModel.SEND_FAILED_KEPT)
+        assertNull(vm.notice.value)
     }
 
     // ---- retry ----
@@ -164,10 +205,12 @@ class ChatViewModelTest {
         assertEquals(listOf("3f1c-0b"), retried)
     }
 
-    @Test fun `a retry that throws does not take the app down`() {
+    @Test fun `a retry that throws does not take the app down, and says so`() {
         retryFailure = IllegalStateException("work manager gone")
-        viewModel().retry("pabc")
+        val vm = viewModel()
+        vm.retry("pabc")
         assertTrue(retried.isEmpty())
+        assertEquals(ChatViewModel.RETRY_FAILED, vm.notice.value)
     }
 
     // ---- scrollback ----
@@ -249,7 +292,7 @@ class ChatViewModelTest {
         assertTrue(stored.isEmpty())
     }
 
-    @Test fun `a page that cannot be fetched can be tried again`() {
+    @Test fun `a page that cannot be fetched can be tried again, and says why once`() {
         var calls = 0
         api.onBefore = { calls++; if (calls == 1) throw IOException("offline") else page(listOf(99L), more = true) }
         val vm = viewModel()
@@ -257,14 +300,42 @@ class ChatViewModelTest {
         vm.loadOlder()
         assertTrue(stored.isEmpty())
         assertTrue(unpaired.isEmpty())
+        assertEquals(ChatViewModel.OLDER_UNREACHABLE, vm.notice.value)
         vm.loadOlder()
         assertEquals(listOf(listOf(99L)), stored)
     }
 
-    @Test fun `a revoked phone found out by scrollback is unpaired`() {
+    @Test fun `scrolling near the end while PaLLi cannot be reached says so once, not at every try, and again after a success`() {
+        var failing = true
+        api.onBefore = { if (failing) throw IOException("offline") else page(listOf(99L), more = true) }
+        val vm = viewModel()
+
+        vm.loadOlder()
+        assertEquals(ChatViewModel.OLDER_UNREACHABLE, vm.notice.value)
+        vm.noticeShown(ChatViewModel.OLDER_UNREACHABLE)
+        repeat(3) { vm.loadOlder() }
+        assertNull("the same trouble is not told again", vm.notice.value)
+
+        failing = false
+        vm.loadOlder()                                             // a page arrives: the run of failures is over
+        failing = true
+        vm.loadOlder()
+        assertEquals(ChatViewModel.OLDER_UNREACHABLE, vm.notice.value)
+    }
+
+    @Test fun `a page PaLLi answers badly says the plain thing`() {
+        api.onBefore = { throw ApiError.Server(500, "boom") }
+        val vm = viewModel()
+        vm.loadOlder()
+        assertEquals(ChatViewModel.OLDER_FAILED, vm.notice.value)
+    }
+
+    @Test fun `a revoked phone found out by scrollback is unpaired, with no notice of its own`() {
         api.onBefore = { throw ApiError.Unauthorized("This phone is not paired.") }
-        viewModel().loadOlder()
+        val vm = viewModel()
+        vm.loadOlder()
         assertEquals(listOf<String?>("This phone was unpaired."), unpaired)
+        assertNull(vm.notice.value)
     }
 
     @Test fun `a page that cannot be stored does not take the app down, and scrollback still works afterwards`() {
@@ -273,6 +344,7 @@ class ChatViewModelTest {
         val vm = viewModel()
         vm.loadOlder()
         assertTrue(stored.isEmpty())
+        assertEquals(ChatViewModel.OLDER_FAILED, vm.notice.value)
 
         insertFailure = null
         vm.loadOlder()
@@ -287,6 +359,7 @@ class ChatViewModelTest {
         assertTrue(vm.banner.value!!.contains("shut"))
 
         api.onMe = { me("open") }
+        now += ChatViewModel.DOOR_RECHECK_MS
         connection.value = ConnState.CONNECTED                     // the next check finds it open
         assertNull(vm.banner.value)
     }
@@ -296,7 +369,20 @@ class ChatViewModelTest {
         assertTrue(viewModel().banner.value!!.contains("different versions"))
     }
 
-    @Test fun `each time the stream connects the door is asked after again, and a drop alone asks nothing`() {
+    @Test fun `starting already connected asks after the door once, not twice, even while the first answer is still out`() {
+        val gate = CompletableDeferred<Unit>()
+        var asks = 0
+        api.onMe = { asks++; gate.await(); me("closed") }
+        connection.value = ConnState.CONNECTED
+        val vm = viewModel()
+        assertEquals("the start check, and no second one for the connect it started in", 1, asks)
+
+        gate.complete(Unit)
+        assertEquals(1, asks)
+        assertTrue(vm.banner.value!!.contains("shut"))
+    }
+
+    @Test fun `each connect asks after the door again, but never within thirty seconds of an answer, and a drop alone asks nothing`() {
         var asks = 0
         api.onMe = { asks++; me("open") }
         val vm = viewModel()
@@ -305,18 +391,58 @@ class ChatViewModelTest {
         connection.value = ConnState.CONNECTING
         connection.value = ConnState.WAITING
         assertEquals(1, asks)
-        connection.value = ConnState.CONNECTED
-        assertEquals(2, asks)
+        connection.value = ConnState.CONNECTED                     // 0 s after the answer
+        assertEquals(1, asks)
+
+        now += ChatViewModel.DOOR_RECHECK_MS - 1
         connection.value = ConnState.WAITING
-        connection.value = ConnState.CONNECTED
-        assertEquals(3, asks)
+        connection.value = ConnState.CONNECTED                     // 29.999 s: a flapping link
+        assertEquals(1, asks)
+
+        now += 1
+        connection.value = ConnState.WAITING
+        connection.value = ConnState.CONNECTED                     // 30 s
+        assertEquals(2, asks)
+
+        connection.value = ConnState.WAITING
+        connection.value = ConnState.CONNECTED                     // and the floor runs from that answer
+        assertEquals(2, asks)
         assertNull(vm.banner.value)
+    }
+
+    @Test fun `a phone that started offline asks as soon as it connects, whatever the floor`() {
+        var asks = 0
+        api.onMe = { asks++; throw IOException("offline") }
+        val vm = viewModel()
+        assertEquals(1, asks)
+        assertNull(vm.banner.value)
+
+        api.onMe = { asks++; me("closed") }
+        connection.value = ConnState.CONNECTED                     // no answer yet, so nothing to floor against
+        assertEquals(2, asks)
+        assertTrue(vm.banner.value!!.contains("shut"))
+    }
+
+    @Test fun `a newer door check replaces an older one still out, whose late answer is thrown away`() {
+        val older = CompletableDeferred<Unit>()
+        var asks = 0
+        api.onMe = { if (asks++ == 0) { older.await(); me("closed") } else me("open") }
+        val vm = viewModel()                                       // the first check is out, unanswered
+        assertEquals(1, asks)
+
+        connection.value = ConnState.CONNECTED                     // a connect: a second check, which answers at once
+        assertEquals(2, asks)
+        assertNull(vm.banner.value)
+
+        older.complete(Unit)                                       // the first limps in afterwards with the old news
+        assertNull("the older answer must not overwrite the newer", vm.banner.value)
     }
 
     @Test fun `a door that cannot be reached leaves the banner as it was`() {
         api.onMe = { me("closed") }
         val vm = viewModel()
         api.onMe = { throw IOException("offline") }
+        now += ChatViewModel.DOOR_RECHECK_MS
         connection.value = ConnState.CONNECTED
         assertTrue(vm.banner.value!!.contains("shut"))
         assertTrue(unpaired.isEmpty())
@@ -332,6 +458,75 @@ class ChatViewModelTest {
         api.onMe = { error("the network must not be asked") }
         hasSession = false
         assertNull(viewModel().banner.value)
+    }
+
+    // ---- another api version: the app will not chat ----
+
+    @Test fun `another api version blocks sending and typing, and keeps what was in the box`() {
+        val vm = viewModel()
+        vm.onDraft("before")                                       // the check passed: typing works
+        assertEquals(1, typingFrames.size)
+        assertEquals(false, vm.sendingBlocked.value)
+
+        api.onMe = { me("open", version = 2) }
+        now += ChatViewModel.DOOR_RECHECK_MS
+        connection.value = ConnState.CONNECTED
+        assertEquals(true, vm.sendingBlocked.value)
+        assertTrue(vm.banner.value!!.contains("different versions"))
+
+        now += 10_000
+        vm.onDraft("after")                                        // refused: no text taken, no frame sent
+        assertEquals("before", vm.draft.value)
+        assertEquals(1, typingFrames.size)
+        vm.send()
+        assertTrue(queued.isEmpty())
+        assertEquals("before", vm.draft.value)
+        assertNull(vm.notice.value)
+    }
+
+    @Test fun `another api version blocks retrying a pending send`() {
+        api.onMe = { me("open", version = 2) }
+        val vm = viewModel()
+        vm.retry("pabc")
+        assertTrue(retried.isEmpty())
+        assertEquals(true, vm.sendingBlocked.value)
+    }
+
+    @Test fun `once PaLLi and the app speak the same version again, sending is back`() {
+        api.onMe = { me("open", version = 2) }
+        val vm = viewModel()
+        assertEquals(true, vm.sendingBlocked.value)
+
+        api.onMe = { me("open", version = 1) }
+        now += ChatViewModel.DOOR_RECHECK_MS
+        connection.value = ConnState.CONNECTED
+        assertEquals(false, vm.sendingBlocked.value)
+        vm.onDraft("hello"); vm.send(); vm.retry("pabc")
+        assertEquals(listOf("hello"), queued)
+        assertEquals(listOf("abc"), retried)
+    }
+
+    @Test fun `a shut door or a missing brain does not block sending, since those messages wait`() {
+        api.onMe = { me("closed") }
+        val vm = viewModel()
+        vm.onDraft("wait for me"); vm.send()
+        assertEquals(false, vm.sendingBlocked.value)
+        assertEquals(listOf("wait for me"), queued)
+    }
+
+    // ---- the notification question ----
+
+    @Test fun `the notification question is put once, and not again after it has been marked`() = runTest {
+        val vm = viewModel()
+        assertEquals(true, vm.shouldAskNotifications())
+        vm.notificationsAsked()
+        assertEquals(false, vm.shouldAskNotifications())
+        assertEquals(false, viewModel().shouldAskNotifications())    // a new screen, a new process: the phone remembers
+    }
+
+    @Test fun `if the phone cannot say whether it has asked, it does not ask`() = runTest {
+        askedFailure = java.io.IOException("datastore unreadable")
+        assertEquals(false, viewModel().shouldAskNotifications())
     }
 
     // ---- what the stream says ----

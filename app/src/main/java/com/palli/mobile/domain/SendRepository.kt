@@ -7,30 +7,60 @@ import com.palli.mobile.data.local.PendingSendEntity
 import com.palli.mobile.data.local.SendStates
 import com.palli.mobile.data.remote.Wire
 import com.palli.mobile.sync.SendWorker
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.builtins.ListSerializer
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * The primary constructor takes the one thing it asks of WorkManager, scheduling a send's work, so a test can make that
+ * fail; the `@Inject` one is what Hilt uses (the same shape as ConnectionController).
+ */
 @Singleton
-class SendRepository @Inject constructor(
+class SendRepository(
     private val pending: PendingSendDao,
-    private val work: WorkManager,
+    private val schedule: (clientId: String) -> Unit,
 ) {
+    @Inject constructor(pending: PendingSendDao, work: WorkManager) : this(pending, { SendWorker.enqueue(work, it) })
+
     fun newClientId(): String = UUID.randomUUID().toString()
 
+    /**
+     * Writes the send, then schedules its work. It throws only when nothing was written, so a caller that gets an
+     * exception can hand the text back without risking a second copy. Once the row is written it does not throw: if the
+     * work cannot be scheduled the row is settled as failed, so its bubble offers Retry (and if even that cannot be
+     * written, the row stays queued and the next app start gives it its work, see [resumeUnsettled]).
+     */
     suspend fun enqueue(text: String, attachments: List<LocalAttachment> = emptyList(), clientId: String = newClientId()): String {
         pending.upsert(PendingSendEntity(
             clientId = clientId, text = text.trim(),
             attachmentsJson = Wire.json.encodeToString(ListSerializer(LocalAttachment.serializer()), attachments),
             state = SendStates.QUEUED, failure = null, createdAt = System.currentTimeMillis(), attempts = 0))
-        SendWorker.enqueue(work, clientId)
+        try {
+            schedule(clientId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            runCatching { pending.setState(clientId, SendStates.FAILED, COULD_NOT_START) }
+        }
         return clientId
     }
 
+    /**
+     * Queues the send again. If its work cannot be scheduled the row goes back to failed (so Retry is offered again) and
+     * the exception is thrown, for the caller to tell the owner.
+     */
     suspend fun retry(clientId: String) {
         pending.setState(clientId, SendStates.QUEUED, null)
-        SendWorker.enqueue(work, clientId)
+        try {
+            schedule(clientId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            runCatching { pending.setState(clientId, SendStates.FAILED, COULD_NOT_START) }
+            throw e
+        }
     }
 
     /**
@@ -46,7 +76,12 @@ class SendRepository @Inject constructor(
     suspend fun resumeUnsettled() {
         val owed = listOf(SendStates.QUEUED, SendStates.SENDING)
         for (clientId in pending.idsIn(owed)) {
-            if (pending.moveIf(clientId, from = owed, to = SendStates.QUEUED) > 0) SendWorker.enqueue(work, clientId)
+            if (pending.moveIf(clientId, from = owed, to = SendStates.QUEUED) > 0) schedule(clientId)
         }
+    }
+
+    companion object {
+        /** What a bubble says when its send was written but could not be started. */
+        const val COULD_NOT_START = "Could not start sending"
     }
 }

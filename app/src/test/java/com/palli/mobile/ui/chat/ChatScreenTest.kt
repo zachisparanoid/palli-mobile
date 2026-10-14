@@ -10,6 +10,7 @@ import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
@@ -69,6 +70,11 @@ class ChatScreenTest {
     private val retried = mutableListOf<String>()
     private val typed = mutableListOf<Long>()
     private var door = "open"
+    private var version = 1
+    private var enqueueFailure: Throwable? = null
+    private var retryFailure: Throwable? = null
+    /** What the phone remembers between starts: whether the notification question has been put. */
+    private var askedFlag = false
 
     private class Api(val me: () -> MeResponse) : PalliApi {
         override suspend fun me() = me.invoke()
@@ -84,17 +90,19 @@ class ChatScreenTest {
     }
 
     private fun viewModel(): ChatViewModel {
-        val api = Api { MeResponse(DeviceRef(1, "Phone"), door, "", 1) }
+        val api = Api { MeResponse(DeviceRef(1, "Phone"), door, "", version) }
         return ChatViewModel(
             observe = { items },
-            enqueue = { queued += it },
-            retrySend = { retried += it },
+            enqueue = { enqueueFailure?.let { e -> throw e }; queued += it },
+            retrySend = { retryFailure?.let { e -> throw e }; retried += it },
             sendTyping = { typed += 1L },
             eventCount = { 0 },
             minId = { null },
             insertNew = { it },
             api = { api },
             unpaired = { },
+            askedNotifications = { askedFlag },
+            markAskedNotifications = { askedFlag = true },
             herTyping = herTyping,
             connection = connection,
             clock = { System.nanoTime() / 1_000_000 },
@@ -180,6 +188,33 @@ class ChatScreenTest {
         assertEquals("rs", opened)
     }
 
+    @Test fun `your bubbles are on the right and hers on the left`() {
+        items.value = listOf(mine("e1", "mine"), hers(2, "hers"))
+        show()
+        val width = compose.onRoot().getUnclippedBoundsInRoot().let { it.right.value - it.left.value }
+        val his = compose.onNodeWithText("mine").getUnclippedBoundsInRoot()
+        val hers = compose.onNodeWithText("hers").getUnclippedBoundsInRoot()
+
+        assertTrue("his starts in the right half (${his.left} of $width)", his.left.value > width / 2)
+        assertTrue("hers ends in the left half (${hers.right} of $width)", hers.right.value < width / 2)
+    }
+
+    @Test fun `another api version shows the update banner and switches the composer off`() {
+        version = 2
+        show()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("different versions", substring = true).fetchSemanticsNodes().isNotEmpty() }
+
+        compose.onNodeWithText("Message PaLLi").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Send").assertIsNotEnabled()
+    }
+
+    @Test fun `a shut door leaves the composer on, because those messages wait`() {
+        door = "closed"
+        show()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("shut", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Message PaLLi").assertIsEnabled()
+    }
+
     // ---- following the conversation ----
 
     private fun longChat(n: Int = 40) = (1..n).map { hers(it, "line $it") }
@@ -192,6 +227,53 @@ class ChatScreenTest {
         items.value = longChat(41)
         compose.waitForIdle()
         compose.onNodeWithText("line 41").assertIsDisplayed()
+    }
+
+    @Test fun `three bubbles arriving at once are followed to the newest when you were at the bottom`() {
+        items.value = longChat()
+        show()
+        compose.onNodeWithText("line 40").assertIsDisplayed()
+
+        items.value = longChat(43)
+        compose.waitForIdle()
+        compose.onNodeWithText("line 43").assertIsDisplayed()
+    }
+
+    @Test fun `six bubbles arriving at once are followed to the newest when you were at the bottom`() {
+        items.value = longChat()
+        show()
+        compose.onNodeWithText("line 40").assertIsDisplayed()
+
+        items.value = longChat(46)
+        compose.waitForIdle()
+        compose.onNodeWithText("line 46").assertIsDisplayed()
+    }
+
+    @Test fun `a second arrival while the first is still being followed down is followed too`() {
+        items.value = longChat()
+        show()
+        compose.mainClock.autoAdvance = false
+        items.value = longChat(43)
+        compose.mainClock.advanceTimeByFrame()                        // the list re-anchors, the follow begins
+        items.value = longChat(46)
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithText("line 46").assertIsDisplayed()
+    }
+
+    @Test fun `three or six bubbles arriving at once do not pull you away from reading back`() {
+        items.value = longChat()
+        show()
+        compose.onNode(hasScrollAction()).performScrollToIndex(30)
+        compose.waitForIdle()
+
+        items.value = longChat(43)
+        compose.waitForIdle()
+        compose.onNodeWithText("line 43").assertDoesNotExist()
+        items.value = longChat(49)                                    // and six more
+        compose.waitForIdle()
+        compose.onNodeWithText("line 49").assertDoesNotExist()
     }
 
     @Test fun `a new bubble from her does not pull you away from reading back`() {
@@ -242,6 +324,27 @@ class ChatScreenTest {
         assertEquals(listOf("c"), retried)
     }
 
+    @Test fun `a message that could not be queued says so over the composer, and is back in the box`() {
+        enqueueFailure = IllegalStateException("disk full")
+        show()
+        compose.onNodeWithText("Message PaLLi").performTextInput("hello")
+        compose.onNodeWithContentDescription("Send").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText(ChatViewModel.SEND_FAILED_KEPT).assertIsDisplayed()
+        compose.onNodeWithText("hello").assertIsDisplayed()              // the text is in the box again
+    }
+
+    @Test fun `a retry that could not be started says so`() {
+        retryFailure = IllegalStateException("work manager gone")
+        items.value = listOf(mine("pc", "broken", SendStatus.FAILED, failure = "PaLLi's door is shut"))
+        show()
+        compose.onNodeWithText("PaLLi's door is shut — tap to retry").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText(ChatViewModel.RETRY_FAILED).assertIsDisplayed()
+    }
+
     @Test fun `a failed send with no reason still says it was not sent`() {
         items.value = listOf(mine("pc", "broken", SendStatus.FAILED))
         show()
@@ -271,15 +374,23 @@ class ChatScreenTest {
         assertEquals(listOf<Any?>(Manifest.permission.POST_NOTIFICATIONS), registry.asked)
     }
 
-    @Test fun `it asks once, not again when the phone is turned or the chat is come back to`() {
+    @Test fun `it asks once ever, not again when the screen is rebuilt or the app is started afresh, even after a no`() {
         val restoration = StateRestorationTester(compose)
-        restoration.setContent(screen(viewModel()))
+        restoration.setContent { screen(remember { viewModel() })() }   // a rebuilt screen has a new view model, as a new process does
         compose.waitForIdle()
         assertEquals(1, registry.asked.size)
+        assertEquals("and the phone wrote it down", true, askedFlag)
 
-        restoration.emulateSavedInstanceStateRestore()
+        restoration.emulateSavedInstanceStateRestore()                  // the answer was "no": nothing was granted
         compose.waitForIdle()
         assertEquals("the screen was rebuilt, and did not ask again", 1, registry.asked.size)
+    }
+
+    @Test fun `a phone that has already been asked is not asked at the first sight of the chat`() {
+        askedFlag = true
+        show()
+        compose.waitForIdle()
+        assertTrue(registry.asked.isEmpty())
     }
 
     @Test fun `it does not ask when notifications are already allowed`() {

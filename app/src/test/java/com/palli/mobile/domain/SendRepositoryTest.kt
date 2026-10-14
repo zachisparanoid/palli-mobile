@@ -91,4 +91,61 @@ class SendRepositoryTest {
         assertEquals(emptyList<WorkInfo.State>(), workStates("racing"))                  // and no second send scheduled for it
         assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates("steady"))
     }
+
+    private val boom = IllegalStateException("work manager is not initialised")
+
+    @Test fun `a send whose work cannot be scheduled is kept as a failed bubble, and enqueue does not throw`() = runTest {
+        val id = SendRepository(db.pendingSends()) { throw boom }.enqueue("  hello ", clientId = "c1")
+
+        assertEquals("c1", id)
+        val row = db.pendingSends().get("c1")!!
+        assertEquals("hello", row.text)
+        assertEquals(SendStates.FAILED, row.state)
+        assertEquals(SendRepository.COULD_NOT_START, row.failure)
+    }
+
+    @Test fun `a send that could not be written throws, and leaves nothing behind to duplicate it`() = runTest {
+        val real = db.pendingSends()
+        val dao = object : PendingSendDao by real {
+            override suspend fun upsert(entity: PendingSendEntity) { throw java.io.IOException("disk full") }
+        }
+        var scheduled = 0
+
+        val failure = runCatching { SendRepository(dao) { scheduled++ }.enqueue("hello", clientId = "c1") }.exceptionOrNull()
+
+        assertEquals(java.io.IOException::class, failure!!::class)
+        assertEquals(null, real.get("c1"))
+        assertEquals(0, scheduled)
+    }
+
+    @Test fun `if even the failed mark cannot be written the row stays queued for the next start, and enqueue still does not throw`() = runTest {
+        val real = db.pendingSends()
+        val dao = object : PendingSendDao by real {
+            override suspend fun setState(clientId: String, state: String, failure: String?) { throw java.io.IOException("disk full") }
+        }
+
+        SendRepository(dao) { throw boom }.enqueue("hello", clientId = "c1")
+
+        assertEquals(SendStates.QUEUED, real.get("c1")!!.state)
+        SendRepository(real, work).resumeUnsettled()
+        assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates("c1"))
+    }
+
+    @Test fun `a retry whose work cannot be scheduled goes back to failed and says so`() = runTest {
+        row("c1", SendStates.FAILED, "PaLLi's door is shut")
+
+        val failure = runCatching { SendRepository(db.pendingSends()) { throw boom }.retry("c1") }.exceptionOrNull()
+
+        assertEquals(boom, failure)
+        assertEquals(SendStates.FAILED, db.pendingSends().get("c1")!!.state)
+        assertEquals(SendRepository.COULD_NOT_START, db.pendingSends().get("c1")!!.failure)
+    }
+
+    @Test fun `a retry queues the row and schedules its work`() = runTest {
+        row("c1", SendStates.FAILED, "PaLLi's door is shut")
+        repo.retry("c1")
+        assertEquals(SendStates.QUEUED, db.pendingSends().get("c1")!!.state)
+        assertEquals(null, db.pendingSends().get("c1")!!.failure)
+        assertEquals(listOf(WorkInfo.State.ENQUEUED), workStates("c1"))
+    }
 }

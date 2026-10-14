@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
@@ -22,6 +23,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -29,10 +33,8 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +44,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.palli.mobile.domain.timeline.TimelineItem
 import com.palli.mobile.ui.theme.PalliColors
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 
 /**
  * Insets, under the edge-to-edge window MainActivity sets up: the top bar pads itself below the status bar, and the
@@ -56,19 +61,21 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
     val connection by vm.connection.collectAsStateWithLifecycle()
     val draft by vm.draft.collectAsStateWithLifecycle()
     val banner by vm.banner.collectAsStateWithLifecycle()
+    val blocked by vm.sendingBlocked.collectAsStateWithLifecycle()
+    val notice by vm.notice.collectAsStateWithLifecycle()
     val newestFirst = remember(items) { items.asReversed() }
     val listState = rememberLazyListState()
 
-    // Notifications need asking for on Android 13+; asked once, the first time the chat opens. Not again when the phone is
-    // turned or the chat is come back to (the flag is saved with this screen), and not at all once it is allowed.
+    // Notifications need asking for on Android 13+; asked once ever, the first time the chat opens. The question is
+    // remembered on the phone (not just for this screen), so after a "no" a later start does not put it again; and it
+    // is not put at all once notifications are allowed.
     val context = LocalContext.current
     val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    var asked by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
-        if (Build.VERSION.SDK_INT >= 33 && !allowed && !asked) {
-            asked = true
+        if (Build.VERSION.SDK_INT >= 33 && !allowed && vm.shouldAskNotifications()) {
+            vm.notificationsAsked()
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
@@ -78,15 +85,32 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
             .collect { last -> if (newestFirst.isNotEmpty() && last >= newestFirst.size - 5) vm.loadOlder() }
     }
     // A new bubble lands below the viewport (the list keeps the bubble it was showing), so follow it down: always for
-    // something you just sent, and for hers or her typing only when you were already at the bottom, not reading back.
+    // something you just sent, and for hers or her typing only when you were at the bottom, not reading back.
+    //
+    // "Were at the bottom" is read here, in composition, as the new bubbles arrive and before they are laid out: once the
+    // list has re-anchored on the bubble it was showing, several bubbles arriving at once (a multi-beat reply, a replay) make
+    // the old bottom look several items away. `follow` carries the decision across a second arrival that comes while the
+    // first is still being followed down.
+    val follow = remember { Follow() }
     val newest = newestFirst.firstOrNull()
-    LaunchedEffect(newest?.key) {
+    val newestKey = newest?.key
+    val wasAtBottomForBubble = remember(newestKey) { listState.isAtBottom() }
+    val wasAtBottomForTyping = remember(typing) { listState.isAtBottom() }
+    LaunchedEffect(newestKey) {
         if (newest == null) return@LaunchedEffect
         val justSent = newest is TimelineItem.Mine && newest.key.startsWith("p")
-        if (justSent || listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
+        if (justSent || wasAtBottomForBubble || follow.pending) listState.followToBottom(follow)
     }
     LaunchedEffect(typing) {
-        if (typing && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
+        if (typing && (wasAtBottomForTyping || follow.pending)) listState.followToBottom(follow)
+    }
+    // What could not be done is said once, in a line over the composer.
+    val snackbars = remember { SnackbarHostState() }
+    LaunchedEffect(notice) {
+        notice?.let {
+            snackbars.showSnackbar(it)
+            vm.noticeShown(it)
+        }
     }
 
     Scaffold(
@@ -105,7 +129,10 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = PalliColors.Background),
             )
         },
-        bottomBar = { Composer(draft, vm::onDraft, vm::send) },
+        bottomBar = { Composer(draft, vm::onDraft, vm::send, enabled = !blocked) },
+        snackbarHost = {
+            SnackbarHost(snackbars) { Snackbar(it, containerColor = PalliColors.Card, contentColor = PalliColors.Text) }
+        },
         containerColor = PalliColors.Background,
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -123,5 +150,27 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
                 items(newestFirst, key = { it.key }) { Bubble(it, vm::retry) }
             }
         }
+    }
+}
+
+/** Whether the list is being followed down to its newest bubble: set when a bubble is followed, cleared when that finishes. */
+private class Follow { var pending = false }
+
+/** At the newest bubble, with none of it scrolled out of view. Read without subscribing, so scrolling does not recompose. */
+private fun LazyListState.isAtBottom(): Boolean =
+    Snapshot.withoutReadObservation { firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0 }
+
+/**
+ * Scrolls to the newest bubble. If this is cancelled because a newer arrival replaced it, the decision to follow stays with
+ * [follow] for that arrival to finish; if the reader's own finger took the list over, it is dropped, and they are left alone.
+ */
+private suspend fun LazyListState.followToBottom(follow: Follow) {
+    follow.pending = true
+    try {
+        animateScrollToItem(0)
+        follow.pending = false
+    } catch (e: CancellationException) {
+        if (currentCoroutineContext().isActive) follow.pending = false
+        throw e
     }
 }

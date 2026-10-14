@@ -81,7 +81,9 @@ class PairLinkNavigationTest {
             Thread.sleep(10)
         }
         SessionStore::class.java.getDeclaredField("cipher").apply { isAccessible = true }.set(app.sessions, FakeCipher())
-        val session = Session("http://100.64.0.7:8000", "pmd_test", 1, "Pixel")
+        // A closed loopback port: the chat's own GET /me to this address is refused at once, so nothing on a network can
+        // answer it (a 401 would unpair this phone in the middle of a test).
+        val session = Session("http://127.0.0.1:1", "pmd_test", 1, "Pixel")
         runBlocking { app.sessions.save(session) }
         return session
     }

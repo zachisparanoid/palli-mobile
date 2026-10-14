@@ -23,6 +23,7 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
         val TOKEN_BLOB = stringPreferencesKey("token_blob")
         val STAY_CONNECTED = booleanPreferencesKey("stay_connected")
         val ASKED_BATTERY = booleanPreferencesKey("asked_battery")
+        val ASKED_NOTIFICATIONS = booleanPreferencesKey("asked_notifications")
     }
 
     suspend fun read(): Stored = store.data.first().let {
@@ -48,4 +49,8 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
 
     suspend fun askedBattery(): Boolean = store.data.first()[Keys.ASKED_BATTERY] ?: false
     suspend fun markAskedBattery() { store.edit { it[Keys.ASKED_BATTERY] = true } }
+
+    /** Whether the system's notification question has been put to the owner. Asked once ever, so a denial is remembered. */
+    suspend fun askedNotifications(): Boolean = store.data.first()[Keys.ASKED_NOTIFICATIONS] ?: false
+    suspend fun markAskedNotifications() { store.edit { it[Keys.ASKED_NOTIFICATIONS] = true } }
 }
