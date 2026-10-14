@@ -99,8 +99,21 @@ class SendRepository(
         }
     }
 
+    /**
+     * A send PaLLi answered 202 for but never recorded (she died mid-intake) would show its check for ever: its message
+     * never comes, and the message coming is what takes the row away. So once the timeline is known fresh (a catch-up
+     * that reached the end, a `/me` answer), a send accepted more than [UNRECORDED_AFTER_MS] ago whose message is still
+     * not in it fails as "Not delivered", and its bubble offers the retry, which goes under the same client id, so a
+     * send she did record after all is not taken twice.
+     */
+    suspend fun expireUnrecorded(now: Long = System.currentTimeMillis()) {
+        pending.expireAccepted(before = now - UNRECORDED_AFTER_MS)
+    }
+
     companion object {
         /** What a bubble says when its send was written but could not be started. */
         const val COULD_NOT_START = "Could not start sending"
+        /** How long after PaLLi accepted a send its message may still be on its way into the timeline. */
+        const val UNRECORDED_AFTER_MS = 5 * 60_000L
     }
 }

@@ -103,6 +103,8 @@ class ChatViewModel(
     private val saveAskedBattery: suspend () -> Unit = { },
     /** Takes a failed send off the phone: its row and its files. */
     private val removeSend: suspend (clientId: String) -> Unit = { },
+    /** Fails the sends PaLLi accepted long ago and never recorded; called when `/me` answers (the timeline is fresh then). */
+    private val expireUnrecorded: suspend () -> Unit = { },
 ) : ViewModel() {
     @Inject constructor(
         timeline: TimelineRepository,
@@ -142,6 +144,7 @@ class ChatViewModel(
         askedBattery = prefs::askedBattery,
         saveAskedBattery = prefs::markAskedBattery,
         removeSend = sends::remove,
+        expireUnrecorded = { sends.expireUnrecorded() },
     )
 
     private val window = MutableStateFlow(FIRST_WINDOW)
@@ -471,6 +474,7 @@ class ChatViewModel(
                         doorAnsweredAt = clock()
                         _banner.value = DoorBanner.text(it)
                         gate.heard(it.apiVersion)
+                        expireUnrecorded()
                     }
                     .onFailure { if (it is ApiError.Unauthorized) unpaired(UNPAIRED) }
             }

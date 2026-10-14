@@ -2,6 +2,7 @@ package com.palli.mobile.di
 
 import com.palli.mobile.data.remote.ApiFactory
 import com.palli.mobile.data.session.SessionStore
+import com.palli.mobile.domain.SendRepository
 import com.palli.mobile.domain.TimelineRepository
 import com.palli.mobile.domain.Unpairer
 import com.palli.mobile.sync.CatchUpProcessor
@@ -43,6 +44,7 @@ object SyncModule {
 
     @Provides
     fun catchUp(sessions: SessionStore, apis: ApiFactory, timeline: TimelineRepository, sink: NotifyingSink,
-                unpairer: Unpairer): CatchUpProcessor =
-        CatchUpProcessor({ sessions.current ?: sessions.load() }, apis, timeline::insertNew, timeline::maxId, sink, unpairer)
+                unpairer: Unpairer, sends: SendRepository): CatchUpProcessor =
+        CatchUpProcessor({ sessions.current ?: sessions.load() }, apis, timeline::insertNew, timeline::maxId, sink, unpairer,
+            expireUnrecorded = { sends.expireUnrecorded() })
 }

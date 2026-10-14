@@ -45,7 +45,8 @@ class SendProcessor @Inject constructor(
         pending.bumpAttempts(clientId)
         val error = apiCall { apis.forBase(session.baseUrl).send(buildParts(send)) }.exceptionOrNull()
         return when (error) {
-            null -> { pending.setState(clientId, SendStates.ACCEPTED, null); Outcome.DONE }
+            // When she took it: if her record of it never comes, it becomes "Not delivered" (SendRepository.expireUnrecorded).
+            null -> { pending.setAccepted(clientId, System.currentTimeMillis()); Outcome.DONE }
             is ApiError.TooLarge, is ApiError.Rejected -> {
                 pending.setState(clientId, SendStates.FAILED, error.message); Outcome.DONE
             }

@@ -74,8 +74,11 @@ class SendProcessorTest {
         queue("c-1", "look", listOf(LocalAttachment(photo.path, "image", "image/jpeg", "cat.jpg")))
         server.enqueue(MockResponse().setResponseCode(202).setBody("""{"client_id":"c-1"}"""))
 
+        val before = System.currentTimeMillis()
         assertEquals(SendProcessor.Outcome.DONE, processor.process("c-1"))
         assertEquals(SendStates.ACCEPTED, db.pendingSends().get("c-1")!!.state)
+        val acceptedAt = db.pendingSends().get("c-1")!!.acceptedAt!!          // when, for "Not delivered" if it never arrives
+        assertTrue(acceptedAt in before..System.currentTimeMillis())
         val request = server.takeRequest()
         val body = request.body.readUtf8()
         assertEquals("Bearer pmd_test", request.getHeader("Authorization"))

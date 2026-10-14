@@ -81,4 +81,34 @@ class DaosTest {
         assertEquals(SendStates.ACCEPTED, dao.get("done")!!.state)
         assertEquals(SendStates.FAILED, dao.get("bad")!!.state); assertEquals("too large", dao.get("bad")!!.failure)
     }
+
+    @Test fun `expireAccepted fails, as Not delivered, only the accepted sends accepted before the cut`() = runTest {
+        val dao = db.pendingSends()
+        dao.upsert(PendingSendEntity("old", "a", "[]", SendStates.ACCEPTED, null, 1L, 1, acceptedAt = 100L))
+        dao.upsert(PendingSendEntity("young", "b", "[]", SendStates.ACCEPTED, null, 2L, 1, acceptedAt = 900L))
+        dao.upsert(PendingSendEntity("upgraded", "c", "[]", SendStates.ACCEPTED, null, 3L, 1, acceptedAt = null))
+        dao.upsert(PendingSendEntity("queued", "d", "[]", SendStates.QUEUED, null, 4L, 0))
+        dao.upsert(PendingSendEntity("sending", "e", "[]", SendStates.SENDING, null, 5L, 1))
+        dao.upsert(PendingSendEntity("refused", "f", "[]", SendStates.FAILED, "too large", 6L, 1))
+
+        assertEquals(2, dao.expireAccepted(before = 500L))
+
+        for (id in listOf("old", "upgraded")) {                  // an accepted row from before acceptedAt existed is old
+            assertEquals(SendStates.FAILED, dao.get(id)!!.state)
+            assertEquals(SendStates.NOT_DELIVERED, dao.get(id)!!.failure)
+        }
+        assertEquals(SendStates.ACCEPTED, dao.get("young")!!.state)
+        assertEquals(SendStates.QUEUED, dao.get("queued")!!.state)
+        assertEquals(SendStates.SENDING, dao.get("sending")!!.state)
+        assertEquals("too large", dao.get("refused")!!.failure)
+    }
+
+    @Test fun `setAccepted marks the send accepted and when`() = runTest {
+        val dao = db.pendingSends()
+        dao.upsert(PendingSendEntity("c1", "hi", "[]", SendStates.SENDING, null, 1L, 1))
+        dao.setAccepted("c1", at = 1_234L)
+        assertEquals(SendStates.ACCEPTED, dao.get("c1")!!.state)
+        assertEquals(1_234L, dao.get("c1")!!.acceptedAt)
+        assertNull(dao.get("c1")!!.failure)
+    }
 }

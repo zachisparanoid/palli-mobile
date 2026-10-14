@@ -29,6 +29,17 @@ interface PendingSendDao {
     @Query("SELECT * FROM pending_sends WHERE clientId = :clientId") suspend fun get(clientId: String): PendingSendEntity?
     @Query("UPDATE pending_sends SET state = :state, failure = :failure WHERE clientId = :clientId")
     suspend fun setState(clientId: String, state: String, failure: String?)
+    /** PaLLi answered 202 for the send, [at] (wall clock, ms). */
+    @Query("UPDATE pending_sends SET state = '${SendStates.ACCEPTED}', failure = NULL, acceptedAt = :at WHERE clientId = :clientId")
+    suspend fun setAccepted(clientId: String, at: Long)
+    /**
+     * Fails, as [SendStates.NOT_DELIVERED], every send PaLLi accepted before [before] (one accepted before the time was
+     * kept counts as long ago) whose message is still not in the timeline: a send whose message arrived has left the
+     * table already. Call it only where the timeline is known fresh. Returns the sends it failed.
+     */
+    @Query("UPDATE pending_sends SET state = '${SendStates.FAILED}', failure = '${SendStates.NOT_DELIVERED}' " +
+        "WHERE state = '${SendStates.ACCEPTED}' AND (acceptedAt IS NULL OR acceptedAt < :before)")
+    suspend fun expireAccepted(before: Long): Int
     @Query("UPDATE pending_sends SET attempts = attempts + 1 WHERE clientId = :clientId")
     suspend fun bumpAttempts(clientId: String)
     /** The ids of the sends in any of these states, oldest first. */

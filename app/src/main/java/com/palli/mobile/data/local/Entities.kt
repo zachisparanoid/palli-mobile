@@ -39,8 +39,12 @@ object SendStates {
     const val SENDING = "sending"
     const val ACCEPTED = "accepted"
     const val FAILED = "failed"
+
+    /** The failure of a send PaLLi accepted but never recorded (see [PendingSendDao.expireAccepted]). */
+    const val NOT_DELIVERED = "Not delivered"
 }
 
+/** [acceptedAt] is when PaLLi answered 202 (wall clock, ms); null until then, and for a send accepted before it was kept. */
 @Entity(tableName = "pending_sends")
 data class PendingSendEntity(
     @PrimaryKey val clientId: String,
@@ -50,6 +54,7 @@ data class PendingSendEntity(
     val failure: String?,
     val createdAt: Long,
     val attempts: Int,
+    val acceptedAt: Long? = null,
 ) {
     fun attachments(): List<LocalAttachment> =
         Wire.json.decodeFromString(ListSerializer(LocalAttachment.serializer()), attachmentsJson)

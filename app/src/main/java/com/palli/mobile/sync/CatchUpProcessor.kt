@@ -9,7 +9,11 @@ import com.palli.mobile.data.session.Session
 import com.palli.mobile.domain.Unpairer
 import kotlinx.coroutines.CancellationException
 
-/** The safety net under the connection: fetch what arrived while Android had the service stopped. */
+/**
+ * The safety net under the connection: fetch what arrived while Android had the service stopped. A catch-up that reaches
+ * the end of her log leaves the timeline known fresh, so it ends by expiring the sends she accepted long ago and never
+ * recorded ([expireUnrecorded]).
+ */
 class CatchUpProcessor(
     private val currentSession: suspend () -> Session?,
     private val apis: ApiFactory,
@@ -17,6 +21,7 @@ class CatchUpProcessor(
     private val maxId: suspend () -> Long,
     private val sink: EventSink,
     private val unpairer: Unpairer,
+    private val expireUnrecorded: suspend () -> Unit = { },
 ) {
     /** True when done (or there is nothing to do); false when PaLLi could not be reached — try later. */
     suspend fun run(): Boolean {
@@ -39,7 +44,16 @@ class CatchUpProcessor(
                     Log.w("CatchUp", "notifying failed: ${e.javaClass.simpleName}")   // the class name only
                 }
             }
-            if (!page.more || page.events.isEmpty()) return true
+            if (!page.more || page.events.isEmpty()) {
+                try {
+                    expireUnrecorded()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("CatchUp", "expiring unrecorded sends failed: ${e.javaClass.simpleName}")
+                }
+                return true
+            }
             after = page.events.last().id
         }
     }

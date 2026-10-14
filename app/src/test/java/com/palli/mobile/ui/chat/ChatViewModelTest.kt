@@ -66,6 +66,7 @@ class ChatViewModelTest {
     private val queued = mutableListOf<String>()
     private val retried = mutableListOf<String>()
     private val removed = mutableListOf<String>()
+    private var expiries = 0
     private var removeFailure: Throwable? = null
     private val unpaired = mutableListOf<String?>()
     private val windows = mutableListOf<Int>()
@@ -92,6 +93,7 @@ class ChatViewModelTest {
         enqueue = { text -> held?.await(); enqueueFailure?.let { throw it }; queued += text },
         retrySend = { id -> retryFailure?.let { throw it }; retried += id },
         removeSend = { id -> removeFailure?.let { throw it }; removed += id },
+        expireUnrecorded = { expiries++ },
         sendTyping = { typingFrames += now },
         eventCount = { count },
         minId = { oldest },
@@ -482,6 +484,20 @@ class ChatViewModelTest {
 
         older.complete(Unit)                                       // the first limps in afterwards with the old news
         assertNull("the older answer must not overwrite the newer", vm.banner.value)
+    }
+
+    @Test fun `an answer from the door means the timeline is fresh, so sends she never recorded are expired then, and only then`() {
+        viewModel()
+        assertEquals(1, expiries)                                  // the first /me answered
+
+        api.onMe = { throw IOException("no route") }
+        connection.value = ConnState.CONNECTED                     // asks again, and gets no answer
+        assertEquals(1, expiries)
+
+        api.onMe = { throw ApiError.Unauthorized("This phone is not paired.") }
+        now += ChatViewModel.DOOR_RECHECK_MS
+        connection.value = ConnState.WAITING; connection.value = ConnState.CONNECTED
+        assertEquals(1, expiries)
     }
 
     @Test fun `a door that cannot be reached leaves the banner as it was`() {
