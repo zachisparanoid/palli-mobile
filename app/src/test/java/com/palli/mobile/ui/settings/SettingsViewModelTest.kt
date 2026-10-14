@@ -10,7 +10,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
@@ -91,19 +90,22 @@ class SettingsViewModelTest {
         assertEquals(true, vm.stayConnected.value)
     }
 
-    @Test fun `the switch writes the real stored choice, which is all it does - the connection controller reacts to that`() {
-        Dispatchers.setMain(Dispatchers.Default)                    // real threads, as on a phone: not the test's inline one
+    @Test fun `the switch moves the real stored choice, even for a reader that starts as the write does`() {
+        // DataStore and ServerPrefs for real (through the lambdas given here; the @Inject wiring is SettingsWiringTest's), on
+        // real threads as on a phone. The switch is read straight away, while its write may still be in flight, and so is the
+        // stored choice: both must come to show it.
+        Dispatchers.setMain(Dispatchers.Default)
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val prefs = ServerPrefs(PreferenceDataStoreFactory.create(scope = scope) { tmp.newFile("s.preferences_pb") })
-        val written = Channel<Unit>(Channel.UNLIMITED)
-        val vm = SettingsViewModel(session, emptyFlow(), { on -> prefs.setStayConnected(on); written.send(Unit) }, { })
+        val vm = SettingsViewModel(session, prefs.stayConnected, prefs::setStayConnected, { })
         try {
-            // One at a time: the stored choice is read only once its write has landed. A reader started while a write is
-            // still in flight was seen, under load on this suite's shared threads, to wait on DataStore for good.
-            vm.setStayConnected(false)
-            awaiting { written.receive(); prefs.stayConnected.first() }.let { assertEquals(false, it) }
-            vm.setStayConnected(true)
-            awaiting { written.receive(); prefs.stayConnected.first() }.let { assertEquals(true, it) }
+            awaiting { vm.stayConnected.first { it != null } }
+            repeat(6) { n ->
+                val on = n % 2 == 1
+                vm.setStayConnected(on)
+                awaiting { prefs.stayConnected.first { it == on } }
+                awaiting { vm.stayConnected.first { it == on } }
+            }
         } finally {
             scope.cancel()
         }

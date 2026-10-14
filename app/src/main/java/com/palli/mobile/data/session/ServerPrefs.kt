@@ -1,18 +1,38 @@
 package com.palli.mobile.data.session
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * What this phone remembers: the pairing, and a few choices and answers.
+ *
+ * DataStore is read once, on first use, and written through [update]; every read and every watcher is served from the copy
+ * held here. DataStore 1.1.7, the version this app is pinned to, can lose an update for a collector that starts while a write
+ * is in flight (the collector is handed the old value and never the new one: a switch that does not move, a connection that
+ * does not follow its setting). So no collector is ever started on it after the first read, and that first read and every
+ * write take the same lock, so they never overlap. `ServerPrefsOverlapTest` is the proof.
+ */
 @Singleton
 class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>) {
     data class Stored(val baseUrl: String?, val deviceId: Long?, val deviceName: String?, val tokenBlob: String?)
@@ -28,36 +48,66 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
         val LAST_API_VERSION = intPreferencesKey("last_api_version")
     }
 
-    suspend fun read(): Stored = store.data.first().let {
+    /** The stored preferences, as last read or written here. Null until the first read. */
+    private val cache = MutableStateFlow<Preferences?>(null)
+    private val lock = Mutex()
+
+    /** The preferences now. The first call reads DataStore, under the lock so that no write is in flight at the time. */
+    private suspend fun snapshot(): Preferences =
+        cache.value ?: lock.withLock { cache.value ?: store.data.first().also { cache.value = it } }
+
+    /**
+     * Applies [change] and keeps the copy in step. The write is not cancelled half way: DataStore finishes a write it has
+     * begun, and a copy that did not hear of it would go on answering with the old value. But a caller that was cancelled
+     * meanwhile is told so once it is done, as with any suspending call, so that a screen that has been left does not go on
+     * to what it was going to do next (the chat launching a permission question from a launcher it no longer has).
+     */
+    private suspend fun update(change: (MutablePreferences) -> Unit) {
+        withContext(NonCancellable) {
+            lock.withLock {
+                if (cache.value == null) cache.value = store.data.first()
+                cache.value = store.edit(change)
+            }
+        }
+        currentCoroutineContext().ensureActive()
+    }
+
+    /** The preferences now, and again at each change. */
+    private fun preferences(): Flow<Preferences> = flow {
+        snapshot()
+        emitAll(cache.filterNotNull())
+    }
+
+    suspend fun read(): Stored = snapshot().let {
         Stored(it[Keys.BASE_URL], it[Keys.DEVICE_ID], it[Keys.DEVICE_NAME], it[Keys.TOKEN_BLOB])
     }
 
     suspend fun write(baseUrl: String, deviceId: Long, deviceName: String, tokenBlob: String) {
-        store.edit {
+        update {
             it[Keys.BASE_URL] = baseUrl; it[Keys.DEVICE_ID] = deviceId
             it[Keys.DEVICE_NAME] = deviceName; it[Keys.TOKEN_BLOB] = tokenBlob
         }
     }
 
     suspend fun clearPairing() {
-        store.edit {
+        update {
             it.remove(Keys.BASE_URL); it.remove(Keys.DEVICE_ID); it.remove(Keys.DEVICE_NAME); it.remove(Keys.TOKEN_BLOB)
             it.remove(Keys.LAST_API_VERSION)           // it was that server's; the next one says its own
         }
     }
 
     /** On by default: the persistent connection is how her messages arrive at once. */
-    val stayConnected: Flow<Boolean> = store.data.map { it[Keys.STAY_CONNECTED] ?: true }
-    suspend fun setStayConnected(on: Boolean) { store.edit { it[Keys.STAY_CONNECTED] = on } }
+    val stayConnected: Flow<Boolean> = preferences().map { it[Keys.STAY_CONNECTED] ?: true }
+    suspend fun setStayConnected(on: Boolean) { update { it[Keys.STAY_CONNECTED] = on } }
 
-    suspend fun askedBattery(): Boolean = store.data.first()[Keys.ASKED_BATTERY] ?: false
-    suspend fun markAskedBattery() { store.edit { it[Keys.ASKED_BATTERY] = true } }
+    suspend fun askedBattery(): Boolean = snapshot()[Keys.ASKED_BATTERY] ?: false
+    suspend fun markAskedBattery() { update { it[Keys.ASKED_BATTERY] = true } }
 
     /** Whether the system's notification question has been put to the owner. Asked once ever, so a denial is remembered. */
-    suspend fun askedNotifications(): Boolean = store.data.first()[Keys.ASKED_NOTIFICATIONS] ?: false
-    suspend fun markAskedNotifications() { store.edit { it[Keys.ASKED_NOTIFICATIONS] = true } }
+    suspend fun askedNotifications(): Boolean = snapshot()[Keys.ASKED_NOTIFICATIONS] ?: false
+    suspend fun markAskedNotifications() { update { it[Keys.ASKED_NOTIFICATIONS] = true } }
 
     /** The `api_version` the paired PaLLi last reported on `/me`; null before any answer. Read again after a cold start. */
-    suspend fun lastApiVersion(): Int? = store.data.first()[Keys.LAST_API_VERSION]
-    suspend fun setLastApiVersion(version: Int) { store.edit { it[Keys.LAST_API_VERSION] = version } }
+    suspend fun lastApiVersion(): Int? = snapshot()[Keys.LAST_API_VERSION]
+    suspend fun setLastApiVersion(version: Int) { update { it[Keys.LAST_API_VERSION] = version } }
 }
