@@ -35,4 +35,45 @@ class PairingLinksTest {
         assertNull(PairingLinks.normalizeBaseUrl("http://"))       // half-typed: a scheme, no host
         assertNull(PairingLinks.normalizeBaseUrl("https:///"))
     }
+
+    @Test fun `a scheme with no slashes is half an address, not a host called http`() {
+        assertNull(PairingLinks.normalizeBaseUrl("http:"))
+        assertNull(PairingLinks.normalizeBaseUrl("http:/"))
+        assertNull(PairingLinks.normalizeBaseUrl("https:"))
+        assertNull(PairingLinks.normalizeBaseUrl("https:/"))
+        assertNull(PairingLinks.normalizeBaseUrl("HTTP:"))
+        assertNull(PairingLinks.normalizeBaseUrl("  https:  "))
+        assertNull(PairingLinks.normalizeBaseUrl("http:palli-box.example.ts.net"))      // one colon, no slashes
+        assertNull(PairingLinks.normalizeBaseUrl("http//palli-box.example.ts.net"))     // slashes, no colon
+        assertNull(PairingLinks.normalizeBaseUrl("http"))
+        assertNull(PairingLinks.parse("palli://pair?u=http%3A&c=K7QM2XPA"))
+        assertNull(PairingLinks.parse("palli://pair?u=https%3A%2F&c=K7QM2XPA"))
+    }
+
+    @Test fun `scheme and host read the same in any case`() {
+        assertEquals("http://palli-box.example.ts.net:8000", PairingLinks.normalizeBaseUrl("HTTP://palli-box.example.ts.net:8000"))
+        assertEquals("https://100.64.0.7", PairingLinks.normalizeBaseUrl("Https://100.64.0.7/"))
+        assertEquals("http://palli-box.example.ts.net:8000", PairingLinks.normalizeBaseUrl("Palli-Box.Example.TS.net:8000"))
+        assertEquals("http://palli-box.example.ts.net/Palli", PairingLinks.normalizeBaseUrl("HTTP://Palli-Box.Example.ts.net/Palli/"))   // the path keeps its case
+        assertNull(PairingLinks.normalizeBaseUrl("FTP://palli-box.example.ts.net"))
+        assertNull(PairingLinks.normalizeBaseUrl("HTTP://"))
+    }
+
+    @Test fun `a link reads the same in any case`() {
+        val expected = PairingLink("http://palli-box.example.ts.net:8000", "K7QM2XPA")
+        assertEquals(expected, PairingLinks.parse("Palli://PAIR?u=http%3A%2F%2Fpalli-box.example.ts.net%3A8000&c=K7QM-2XPA"))
+        assertEquals(expected, PairingLinks.parse("PALLI://pair?u=HTTP%3A%2F%2FPalli-Box.example.ts.net%3A8000&c=k7qm2xpa"))
+    }
+
+    @Test fun `an address cannot hide its host behind user-info`() {
+        // Whatever follows the @ is the host, but a dialog showing the whole string would read as the part before it.
+        assertNull(PairingLinks.normalizeBaseUrl("http://palli-box.example.ts.net@100.64.0.7:8000"))
+        assertNull(PairingLinks.normalizeBaseUrl("palli-box.example.ts.net:8000@100.64.0.7"))
+        assertNull(PairingLinks.parse("palli://pair?u=http%3A%2F%2Fpalli-box.example.ts.net%40100.64.0.7%3A8000&c=K7QM2XPA"))
+    }
+
+    @Test fun `a link with a broken escape is null, not a crash`() {
+        assertNull(PairingLinks.parse("palli://pair?u=%zz&c=K7QM2XPA"))
+        assertNull(PairingLinks.parse("palli://pair?u=http%3A%2F%2F100.64.0.7&c=%"))
+    }
 }

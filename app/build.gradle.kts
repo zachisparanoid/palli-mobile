@@ -123,6 +123,11 @@ dependencies {
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.work.testing)
     testImplementation(libs.robolectric)
+    // The Pair/Chat navigation, run on Robolectric. The same androidx.test versions as androidTest below, which also
+    // keeps ui-test-junit4 from pulling older ones.
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.androidx.test.junit)
+    testImplementation(libs.androidx.test.runner)
 
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.test.junit)
