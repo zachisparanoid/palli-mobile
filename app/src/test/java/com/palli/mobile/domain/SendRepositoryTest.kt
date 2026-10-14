@@ -159,6 +159,34 @@ class SendRepositoryTest {
         assertEquals(listOf(WorkInfo.State.ENQUEUED), drains())
     }
 
+    // ---- PaLLi known to answer ----
+
+    @Test fun `PaLLi answering restarts a waiting drain only while something is owed`() = runTest {
+        var restarts = 0
+        val repo = SendRepository(db.pendingSends(), restartWaitingDrain = { restarts++ }) { }
+        row("refused", SendStates.FAILED, "too large", createdAt = 1)
+        row("accepted", SendStates.ACCEPTED, createdAt = 2)
+        repo.restartStalled()
+        assertEquals("nothing owed: nothing to restart", 0, restarts)
+
+        row("queued", SendStates.QUEUED, createdAt = 3)
+        repo.restartStalled()
+        assertEquals(1, restarts)
+
+        db.pendingSends().setState("queued", SendStates.SENDING, null)      // left mid-flight is owed too
+        repo.restartStalled()
+        assertEquals(2, restarts)
+    }
+
+    @Test fun `a retry starts the count of failed tries again`() = runTest {
+        db.pendingSends().upsert(PendingSendEntity("c1", "hi", "[]", SendStates.FAILED, "PaLLi couldn't take this one.", 1, 5))
+        repo.retry("c1")
+        val row = db.pendingSends().get("c1")!!
+        assertEquals(SendStates.QUEUED, row.state)
+        assertEquals(null, row.failure)
+        assertEquals(0, row.attempts)
+    }
+
     // ---- removing a failed send ----
 
     @Test fun `removing a failed send deletes its row and its folder, and leaves the drain to the other sends`() = runTest {

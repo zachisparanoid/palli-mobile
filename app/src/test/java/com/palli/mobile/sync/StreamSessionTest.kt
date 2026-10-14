@@ -41,6 +41,8 @@ class StreamSessionTest {
     private var sinkFailure: Throwable? = null
     private var unpairFailure: Throwable? = null
 
+    private var connects = 0
+
     private fun TestScope.newSession(sockets: FakeSockets) = StreamSession(
         scope = backgroundScope,
         currentSession = { lookupFailure?.also { lookupFailure = null }?.let { throw it }; session },
@@ -64,6 +66,7 @@ class StreamSessionTest {
             }
         },
         backoff = Backoff(random = { 1.0 }),
+        onConnected = { connects++ },
     )
 
     private fun event(id: Long) =
@@ -79,6 +82,21 @@ class StreamSessionTest {
         assertEquals("pmd_t", socket.token)
         socket.listener.onOpen(); runCurrent()
         assertEquals(ConnState.CONNECTED, stream.state.value)
+    }
+
+    @Test fun `each connect tells whoever waits on PaLLi answering, once`() = runTest {
+        val sockets = FakeSockets()
+        val stream = newSession(sockets)
+        stream.start(); runCurrent()
+        assertEquals(0, connects)                                   // trying is not answering
+        sockets.opened.single().listener.onOpen(); runCurrent()
+        assertEquals(1, connects)
+
+        sockets.opened.single().listener.onFailure(java.io.IOException("reset")); runCurrent()
+        advanceTimeBy(60_000); runCurrent()                        // backs off, and tries again
+        sockets.opened.last().listener.onOpen(); runCurrent()
+        assertEquals(2, sockets.opened.size)
+        assertEquals(2, connects)
     }
 
     @Test fun `an event is committed before it is acked, and a replay notifies nothing`() = runTest {

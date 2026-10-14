@@ -41,8 +41,12 @@ interface PendingSendDao {
     @Query("UPDATE pending_sends SET state = '${SendStates.FAILED}', failure = '${SendStates.NOT_DELIVERED}' " +
         "WHERE state = '${SendStates.ACCEPTED}' AND (acceptedAt IS NULL OR acceptedAt < :before)")
     suspend fun expireAccepted(before: Long): Int
+    /** One more failed try that was this send's own (see SendProcessor: an unreachable PaLLi or a shut door is not one). */
     @Query("UPDATE pending_sends SET attempts = attempts + 1 WHERE clientId = :clientId")
     suspend fun bumpAttempts(clientId: String)
+    /** Queued again by hand: no failure, and its count of failed tries starts again. */
+    @Query("UPDATE pending_sends SET state = '${SendStates.QUEUED}', failure = NULL, attempts = 0 WHERE clientId = :clientId")
+    suspend fun requeue(clientId: String)
     /** The ids of the sends in any of these states, oldest first. */
     @Query("SELECT clientId FROM pending_sends WHERE state IN (:states) ORDER BY createdAt, clientId")
     suspend fun idsIn(states: List<String>): List<String>

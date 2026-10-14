@@ -71,7 +71,6 @@ class SendProcessor @Inject constructor(
             return Outcome.DONE
         }
         pending.setState(clientId, SendStates.SENDING, null)
-        pending.bumpAttempts(clientId)
         val error = apiCall { apis.forBase(session.baseUrl).send(buildParts(send)) }.exceptionOrNull()
         // A 2xx whose body this app cannot read (ApiError.UNREADABLE, code 200) is accepted too: PaLLi took the send, and
         // her dedupe would only answer 202 again, for ever.
@@ -83,14 +82,39 @@ class SendProcessor @Inject constructor(
                 pending.setState(clientId, SendStates.FAILED, error.message); Outcome.DONE
             }
             error is ApiError.Unauthorized -> { unpairer.unpaired("This phone was unpaired."); Outcome.UNPAIRED }
-            else -> { pending.setState(clientId, SendStates.QUEUED, null); Outcome.RETRY }
+            else -> tryAgainLater(clientId, error)
         }
+    }
+
+    /**
+     * Trouble that may pass: the send is queued again and the drain stops, the sends behind it waiting. But one that
+     * fails this way every time would hold them for ever, showing "sending", with no Remove (that is for failed sends).
+     * So a try that says something about this send counts, and the [MAX_ATTEMPTS]th fails it, as [COULD_NOT_TAKE],
+     * which offers retry and Remove, and the drain goes on to the next. What says nothing about this send does not
+     * count: PaLLi out of reach, her door shut or her brain missing (any 503), her rate limit, or her host gate.
+     */
+    private suspend fun tryAgainLater(clientId: String, error: Throwable?): Outcome {
+        val aboutThePhone = error is ApiError.Unreachable || error is ApiError.DoorClosed ||
+            error is ApiError.RateLimited || error is ApiError.Forbidden
+        if (!aboutThePhone) {
+            pending.bumpAttempts(clientId)
+            val tries = pending.get(clientId)?.attempts ?: return Outcome.DONE           // settled meanwhile
+            if (tries >= MAX_ATTEMPTS) {
+                pending.setState(clientId, SendStates.FAILED, COULD_NOT_TAKE)
+                return Outcome.DONE
+            }
+        }
+        pending.setState(clientId, SendStates.QUEUED, null)
+        return Outcome.RETRY
     }
 
     companion object {
         const val TOO_BIG = "Too big to send: over 20 MB for one file, or 60 MB in all."
         const val TEXT_TOO_LONG = "Too long to send as a message: over 64 KB of words."
         const val UNREADABLE = "This message could not be read back on the phone."
+        const val COULD_NOT_TAKE = "PaLLi couldn't take this one."
+        /** Failed tries that were this send's own before it fails for good. */
+        const val MAX_ATTEMPTS = 5
         private val OWED = listOf(SendStates.QUEUED, SendStates.SENDING)
 
         fun buildParts(send: PendingSendEntity): List<MultipartBody.Part> = buildList {

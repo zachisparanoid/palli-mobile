@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Looper
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import androidx.work.BackoffPolicy
 import androidx.work.Configuration
 import androidx.work.ListenableWorker
 import androidx.work.WorkInfo
@@ -77,6 +78,10 @@ class SendWorkerTest {
     private val answers = mutableMapOf<String, MockResponse>()
     /** Held open while the first send is in flight, so a second one started meanwhile would be caught at it. */
     private val holdFirst = CountDownLatch(1)
+    /** How long the first send is held, at most. */
+    private var holdMs = 300L
+    /** Counted down when the first send reaches PaLLi. */
+    private val firstArrived = CountDownLatch(1)
 
     private object PlainCipher : TokenCipher {
         override fun encrypt(plain: String) = plain
@@ -92,7 +97,7 @@ class SendWorkerTest {
                     val id = Regex("name=\"client_id\"\\r\\n(?:[^\\r\\n]+\\r\\n)*\\r\\n([^\\r\\n]+)")
                         .find(request.body.readUtf8())!!.groupValues[1]
                     arrived += id
-                    if (arrived.size == 1) holdFirst.await(300, TimeUnit.MILLISECONDS)
+                    if (arrived.size == 1) { firstArrived.countDown(); holdFirst.await(holdMs, TimeUnit.MILLISECONDS) }
                     return answers[id] ?: MockResponse().setResponseCode(202).setBody("""{"client_id":"$id"}""")
                 } finally {
                     inFlight.decrementAndGet()
@@ -140,7 +145,8 @@ class SendWorkerTest {
         assertEquals(SendStates.ACCEPTED, state("aardvark"))
     }
 
-    @Test fun `through WorkManager on real worker threads, sends written offline go when the network returns, in order, one at a time`() {
+    /** The real WorkManager on a real pool of worker threads, its drains made with [processor]. */
+    private fun realWorkManager(): WorkManager {
         val config = Configuration.Builder()
             .setExecutor(Executors.newFixedThreadPool(4))
             .setWorkerFactory(object : WorkerFactory() {
@@ -148,27 +154,137 @@ class SendWorkerTest {
                     SendWorker(appContext, workerParameters, processor)
             }).build()
         WorkManagerTestInitHelper.initializeTestWorkManager(context, config, WorkManagerTestInitHelper.ExecutorsMode.PRESERVE_EXECUTORS)
-        val work = WorkManager.getInstance(context)
+        return WorkManager.getInstance(context)
+    }
+
+    private fun WorkManager.drains(): List<WorkInfo> = getWorkInfosForUniqueWork(SendWorker.UNIQUE).get()
+
+    /**
+     * The network is there: every drain that comes up may run (the ones behind it wait for it to finish). Runs until
+     * [done], or for [forMs] at most. A drain waiting out a backoff is not run: the test driver keeps to it.
+     */
+    private fun WorkManager.letRun(forMs: Long = 15_000, done: () -> Boolean = { drains().all { it.state.isFinished } }) {
         val driver = WorkManagerTestInitHelper.getTestDriver(context)!!
+        val deadline = System.currentTimeMillis() + forMs
+        while (System.currentTimeMillis() < deadline && !done()) {
+            drains().filter { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount == 0 }
+                .forEach { runCatching { driver.setAllConstraintsMet(it.id) } }
+            shadowOf(Looper.getMainLooper()).idle()                // WorkManager starts its workers from the main thread
+            Thread.sleep(20)
+        }
+    }
+
+    @Test fun `through WorkManager on real worker threads, sends written offline go when the network returns, in order, one at a time`() {
+        val work = realWorkManager()
         val sends = SendRepository(db.pendingSends()) { SendWorker.enqueue(work) }
 
         val ids = runBlocking { listOf(sends.enqueue("one"), sends.enqueue("two"), sends.enqueue("three")) }   // offline
         assertTrue(arrived.isEmpty())
 
-        // The network returns: each drain may run as soon as it is up (the ones behind it wait for it to finish).
-        val deadline = System.currentTimeMillis() + 15_000
-        while (System.currentTimeMillis() < deadline) {
-            val infos = work.getWorkInfosForUniqueWork(SendWorker.UNIQUE).get()
-            if (infos.all { it.state.isFinished }) break
-            infos.filter { it.state == WorkInfo.State.ENQUEUED }.forEach { runCatching { driver.setAllConstraintsMet(it.id) } }
-            shadowOf(Looper.getMainLooper()).idle()                // WorkManager starts its workers from the main thread
-            Thread.sleep(20)
-        }
+        work.letRun()
 
         assertEquals(ids, arrived)
         assertEquals("never two in flight at once", 1, mostInFlight.get())
         assertTrue(work.getWorkInfosForUniqueWork(SendWorker.UNIQUE).get().all { it.state == WorkInfo.State.SUCCEEDED })
         runBlocking { ids.forEach { assertEquals(SendStates.ACCEPTED, state(it)) } }
+    }
+
+    // ---- a drain waiting out its backoff ----
+
+    @Test fun `the drain backs off linearly from ten seconds, so an hour's outage leaves a wait of minutes, not most of an hour`() {
+        val spec = SendWorker.request().workSpec
+        assertEquals(BackoffPolicy.LINEAR, spec.backoffPolicy)
+        assertEquals(10_000L, spec.backoffDelayDuration)
+    }
+
+    @Test fun `a send typed once PaLLi is back goes when she is known to answer, without waiting out the drain's backoff`() {
+        val work = realWorkManager()
+        val sends = SendRepository(db.pendingSends(), restartWaitingDrain = { SendWorker.restartIfWaiting(work) }) {
+            SendWorker.enqueue(work)
+        }
+        answers["first"] = MockResponse().setResponseCode(503).setBody("""{"detail":{"reason":"door_closed"}}""")
+        runBlocking { sends.enqueue("first", clientId = "first") }
+        work.letRun { work.drains().any { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount > 0 } }
+        assertEquals(listOf("first"), arrived)                     // the door was shut: the drain waits out its backoff
+
+        answers.remove("first")                                    // the door opens, and he types again
+        runBlocking { sends.enqueue("second", clientId = "second") }
+        work.letRun(forMs = 1_000)
+        assertEquals("both wait behind the backed-off drain", listOf("first"), arrived)
+
+        runBlocking { sends.restartStalled() }                     // the stream connects, or /me says the door is open
+        work.letRun(forMs = 5_000)                                 // well inside the ten seconds the backoff would take
+
+        assertEquals(listOf("first", "first", "second"), arrived)
+        runBlocking { listOf("first", "second").forEach { assertEquals(SendStates.ACCEPTED, state(it)) } }
+        assertEquals("never two in flight at once", 1, mostInFlight.get())
+    }
+
+    @Test fun `a drain that is sending is never replaced`() {
+        val work = realWorkManager()
+        holdMs = 10_000                                            // the first send stays in flight until let go
+        runBlocking { row("first", createdAt = 1) }
+        SendWorker.enqueue(work)
+        work.letRun(forMs = 10_000) { firstArrived.count == 0L }
+        val running = work.drains().single()
+        assertEquals(WorkInfo.State.RUNNING, running.state)
+
+        assertEquals(false, runBlocking { SendWorker.restartIfWaiting(work) })
+        assertEquals(listOf(running.id), work.drains().map { it.id })
+        assertEquals(WorkInfo.State.RUNNING, work.drains().single().state)
+
+        holdFirst.countDown()
+        work.letRun()
+        assertEquals(listOf("first"), arrived)                     // sent once, by the drain that was running
+        assertEquals(WorkInfo.State.SUCCEEDED, work.getWorkInfoById(running.id).get()!!.state)
+    }
+
+    // ---- a send that always fails ----
+
+    @Test fun `five server errors fail a send for good, and the next one goes`() = runTest {
+        row("stuck", createdAt = 1)
+        row("next", createdAt = 2)
+        answers["stuck"] = MockResponse().setResponseCode(500).setBody("""{"detail":"boom"}""")
+
+        repeat(4) { n ->
+            assertEquals(ListenableWorker.Result.retry(), worker().doWork())
+            assertEquals(SendStates.QUEUED, state("stuck"))
+            assertEquals(n + 1, db.pendingSends().get("stuck")!!.attempts)
+        }
+        assertEquals(ListenableWorker.Result.success(), worker().doWork())
+
+        assertEquals(SendStates.FAILED, state("stuck"))
+        assertEquals(SendProcessor.COULD_NOT_TAKE, db.pendingSends().get("stuck")!!.failure)
+        assertEquals(SendStates.ACCEPTED, state("next"))
+        assertEquals(listOf("stuck", "stuck", "stuck", "stuck", "stuck", "next"), arrived)
+    }
+
+    @Test fun `a shut door or a missing brain says nothing about the send, however often`() = runTest {
+        row("waiting", createdAt = 1)
+        for (reason in listOf("door_closed", "no_brain")) {
+            answers["waiting"] = MockResponse().setResponseCode(503).setBody("""{"detail":{"reason":"$reason"}}""")
+            repeat(5) { assertEquals(ListenableWorker.Result.retry(), worker().doWork()) }
+        }
+        assertEquals(SendStates.QUEUED, state("waiting"))
+        assertEquals(0, db.pendingSends().get("waiting")!!.attempts)
+    }
+
+    @Test fun `nor does a rate limit or the host gate, which are about the phone`() = runTest {
+        row("waiting", createdAt = 1)
+        for (code in listOf(429, 403)) {
+            answers["waiting"] = MockResponse().setResponseCode(code).setBody("""{"detail":"not now"}""")
+            repeat(5) { assertEquals(ListenableWorker.Result.retry(), worker().doWork()) }
+        }
+        assertEquals(SendStates.QUEUED, state("waiting"))
+        assertEquals(0, db.pendingSends().get("waiting")!!.attempts)
+    }
+
+    @Test fun `nor does PaLLi being out of reach, however long`() = runTest {
+        row("waiting", createdAt = 1)
+        server.shutdown()                                          // nothing listens: the connection is refused
+        repeat(5) { assertEquals(ListenableWorker.Result.retry(), worker().doWork()) }
+        assertEquals(SendStates.QUEUED, state("waiting"))
+        assertEquals(0, db.pendingSends().get("waiting")!!.attempts)
     }
 
     @Test fun `two written in the same millisecond go in client id order, every time`() = runTest {

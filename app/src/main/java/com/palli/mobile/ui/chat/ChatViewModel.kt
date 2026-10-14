@@ -105,6 +105,8 @@ class ChatViewModel(
     private val removeSend: suspend (clientId: String) -> Unit = { },
     /** Fails the sends PaLLi accepted long ago and never recorded; called when `/me` answers (the timeline is fresh then). */
     private val expireUnrecorded: suspend () -> Unit = { },
+    /** Starts a drain waiting out its backoff; called when `/me` says the door is open (SendRepository.restartStalled). */
+    private val restartSends: suspend () -> Unit = { },
 ) : ViewModel() {
     @Inject constructor(
         timeline: TimelineRepository,
@@ -145,6 +147,7 @@ class ChatViewModel(
         saveAskedBattery = prefs::markAskedBattery,
         removeSend = sends::remove,
         expireUnrecorded = { sends.expireUnrecorded() },
+        restartSends = { sends.restartStalled() },
     )
 
     private val window = MutableStateFlow(FIRST_WINDOW)
@@ -475,6 +478,7 @@ class ChatViewModel(
                         _banner.value = DoorBanner.text(it)
                         gate.heard(it.apiVersion)
                         expireUnrecorded()
+                        if (DoorBanner.text(it) == null) restartSends()     // nothing to say: the door is open to sends
                     }
                     .onFailure { if (it is ApiError.Unauthorized) unpaired(UNPAIRED) }
             }

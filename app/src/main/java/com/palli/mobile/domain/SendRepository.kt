@@ -23,11 +23,13 @@ import javax.inject.Singleton
 class SendRepository(
     private val pending: PendingSendDao,
     private val forgetFiles: (clientId: String) -> Unit = {},
+    private val restartWaitingDrain: suspend () -> Unit = {},
     private val schedule: () -> Unit,
 ) {
     @Inject constructor(pending: PendingSendDao, work: WorkManager, outgoing: OutgoingFiles) : this(
         pending,
         forgetFiles = outgoing::forget,
+        restartWaitingDrain = { SendWorker.restartIfWaiting(work) },
         schedule = { SendWorker.enqueue(work) },
     )
 
@@ -40,6 +42,16 @@ class SendRepository(
     suspend fun remove(clientId: String) {
         if (pending.deleteIfFailed(clientId) == 0) return
         forgetFiles(clientId)
+    }
+
+    /**
+     * PaLLi is known to answer (the stream connected, or `/me` said the door is open). A drain that met trouble waits out
+     * its backoff, and every send typed since waits behind it; so if anything is owed, a drain waiting that way is
+     * started again now (SendWorker.restartIfWaiting, which never touches one that is running).
+     */
+    suspend fun restartStalled() {
+        if (pending.idsIn(listOf(SendStates.QUEUED, SendStates.SENDING)).isEmpty()) return
+        restartWaitingDrain()
     }
 
     fun newClientId(): String = UUID.randomUUID().toString()
@@ -66,11 +78,12 @@ class SendRepository(
     }
 
     /**
-     * Queues the send again, in the turn it was written in. If the drain cannot be scheduled the row goes back to failed
-     * (so Retry is offered again) and the exception is thrown, for the caller to tell the owner.
+     * Queues the send again, in the turn it was written in, with its count of failed tries started again. If the drain
+     * cannot be scheduled the row goes back to failed (so Retry is offered again) and the exception is thrown, for the
+     * caller to tell the owner.
      */
     suspend fun retry(clientId: String) {
-        pending.setState(clientId, SendStates.QUEUED, null)
+        pending.requeue(clientId)
         try {
             schedule()
         } catch (e: CancellationException) {

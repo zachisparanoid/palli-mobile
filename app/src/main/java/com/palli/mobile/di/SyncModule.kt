@@ -38,9 +38,9 @@ object SyncModule {
 
     @Provides @Singleton
     fun stream(@AppScope scope: CoroutineScope, sessions: SessionStore, sockets: SocketFactory,
-               timeline: TimelineRepository, sink: NotifyingSink, unpairer: Unpairer): StreamSession =
+               timeline: TimelineRepository, sink: NotifyingSink, unpairer: Unpairer, sends: SendRepository): StreamSession =
         StreamSession(scope, { sessions.current ?: sessions.load() }, sockets, timeline::insertNew, timeline::maxId,
-            sink, unpairer)
+            sink, unpairer, onConnected = { sends.restartStalled() })
 
     @Provides
     fun catchUp(sessions: SessionStore, apis: ApiFactory, timeline: TimelineRepository, sink: NotifyingSink,

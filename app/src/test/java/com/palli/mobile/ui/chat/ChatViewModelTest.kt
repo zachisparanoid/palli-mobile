@@ -67,6 +67,7 @@ class ChatViewModelTest {
     private val retried = mutableListOf<String>()
     private val removed = mutableListOf<String>()
     private var expiries = 0
+    private var restarts = 0
     private var removeFailure: Throwable? = null
     private val unpaired = mutableListOf<String?>()
     private val windows = mutableListOf<Int>()
@@ -94,6 +95,7 @@ class ChatViewModelTest {
         retrySend = { id -> retryFailure?.let { throw it }; retried += id },
         removeSend = { id -> removeFailure?.let { throw it }; removed += id },
         expireUnrecorded = { expiries++ },
+        restartSends = { restarts++ },
         sendTyping = { typingFrames += now },
         eventCount = { count },
         minId = { oldest },
@@ -498,6 +500,27 @@ class ChatViewModelTest {
         now += ChatViewModel.DOOR_RECHECK_MS
         connection.value = ConnState.WAITING; connection.value = ConnState.CONNECTED
         assertEquals(1, expiries)
+    }
+
+    @Test fun `an open door restarts the sends waiting out a backoff, and a shut one or no answer does not`() {
+        viewModel()
+        assertEquals(1, restarts)                                  // the first /me: the door is open
+
+        api.onMe = { me(door = "closed") }
+        now += ChatViewModel.DOOR_RECHECK_MS
+        connection.value = ConnState.CONNECTED
+        assertEquals(2, expiries)                                  // it was asked, and answered
+        assertEquals(1, restarts)                                  // but the door is shut: the sends would only meet it
+
+        api.onMe = { throw IOException("no route") }
+        now += ChatViewModel.DOOR_RECHECK_MS
+        connection.value = ConnState.WAITING; connection.value = ConnState.CONNECTED
+        assertEquals(1, restarts)
+
+        api.onMe = { me() }
+        now += ChatViewModel.DOOR_RECHECK_MS
+        connection.value = ConnState.WAITING; connection.value = ConnState.CONNECTED
+        assertEquals(2, restarts)
     }
 
     @Test fun `a door that cannot be reached leaves the banner as it was`() {

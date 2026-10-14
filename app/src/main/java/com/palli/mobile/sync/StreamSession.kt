@@ -54,6 +54,8 @@ class StreamSession(
     private val sink: EventSink,
     private val unpairer: Unpairer,
     private val backoff: Backoff = Backoff(),
+    /** Told each time a socket opens: PaLLi is answering (the queue restarts a drain waiting out its backoff). */
+    private val onConnected: suspend () -> Unit = {},
 ) {
     private val _state = MutableStateFlow(ConnState.IDLE)
     val state: StateFlow<ConnState> = _state.asStateFlow()
@@ -103,8 +105,10 @@ class StreamSession(
 
     fun sendTyping() { handle?.send(Frames.TYPING) }
 
-    private fun setState(self: Job, value: ConnState) = synchronized(lock) {
+    /** Sets the state if [self] is still the current loop; says whether it was. */
+    private fun setState(self: Job, value: ConnState): Boolean = synchronized(lock) {
         if (job === self) _state.value = value
+        job === self
     }
 
     private fun setTyping(self: Job, on: Boolean) = synchronized(lock) {
@@ -168,7 +172,7 @@ class StreamSession(
                     return null
                 }
                 when (next) {
-                    Incoming.Open -> setState(self, ConnState.CONNECTED)
+                    Incoming.Open -> if (setState(self, ConnState.CONNECTED)) connected()
                     // A server that accepts and then fails must still back off: only a frame we could use proves it is well.
                     is Incoming.Message -> if (onFrame(next.text, socket, self)) backoff.reset()
                     is Incoming.Closed -> return next.code
@@ -180,6 +184,19 @@ class StreamSession(
             if (!closedByUs) runCatching { socket.close(1000, "done") }
             if (handle === socket) handle = null
             setTyping(self, false)
+        }
+    }
+
+    /** Tells [onConnected], off the loop (whatever it does must not hold up the socket), and never takes the app down. */
+    private fun connected() {
+        scope.launch {
+            try {
+                onConnected()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "after connecting: ${e.javaClass.simpleName}")
+            }
         }
     }
 
