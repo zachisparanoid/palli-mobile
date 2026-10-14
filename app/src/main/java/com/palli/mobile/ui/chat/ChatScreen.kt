@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,12 +42,16 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.palli.mobile.domain.timeline.TimelineItem
 import com.palli.mobile.ui.theme.PalliColors
@@ -120,6 +125,21 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
         if (!granted) vm.refused(Manifest.permission.RECORD_AUDIO)
     }
     fun has(permission: String) = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    // No sound without its control on screen: her note stops, and a note being recorded is dropped, when the chat stops
+    // being seen (the app goes to the background, or Reminders or Settings is opened) and when it leaves for good.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, media) {
+        val silence = {
+            media?.player?.stop()
+            vm.cancelRecording()
+        }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) silence() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            silence()
+        }
+    }
     // Scrolling near the oldest bubble pages back through her log.
     LaunchedEffect(listState, newestFirst.size) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
@@ -202,7 +222,9 @@ fun ChatScreen(onReminders: () -> Unit, onSettings: () -> Unit, vm: ChatViewMode
             }
             LazyColumn(
                 state = listState, reverseLayout = true, modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(12.dp),
+                // Bottom, so a short chat sits just above the composer (the newest bubble is index 0, at the bottom).
+                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
             ) {
                 if (typing) item(key = "typing") { TypingBubble() }
                 items(newestFirst, key = { it.key }) { Bubble(it, vm::retry, media) }

@@ -12,6 +12,8 @@
     <!-- The QR scanner and the camera button. zxing-android-embedded also declares CAMERA, which means
          ACTION_IMAGE_CAPTURE needs it granted too, so the camera button asks first. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- CAMERA would otherwise imply a required camera: the app works without one (type the address; attach files). -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application

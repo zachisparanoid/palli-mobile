@@ -28,6 +28,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import com.palli.mobile.domain.SendLimits
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -99,6 +100,25 @@ class SendProcessorTest {
         assertEquals(SendProcessor.Outcome.DONE, processor.process("c-3"))
         val failed = db.pendingSends().get("c-3")!!
         assertEquals(SendStates.FAILED, failed.state); assertEquals("cat.jpg is over 20 MB.", failed.failure)
+    }
+
+    @Test fun `a send over PaLLi's limits fails for good without an upload, so a broken pipe is never retried`() = runTest {
+        fun sparse(name: String, size: Long) = tmp.newFile(name).apply {
+            java.io.RandomAccessFile(this, "rw").use { it.setLength(size) }
+        }
+        val onePart = sparse("one.bin", SendLimits.MAX_PART_BYTES + 1)
+        queue("c-7", "", listOf(LocalAttachment(onePart.path, "file", "application/octet-stream", "one.bin")))
+        val parts = (1..4).map { sparse("p$it.bin", 16L * 1024 * 1024) }
+        queue("c-8", "", parts.map { LocalAttachment(it.path, "file", "application/octet-stream", it.name) })
+
+        assertEquals(SendProcessor.Outcome.DONE, processor.process("c-7"))
+        assertEquals(SendProcessor.Outcome.DONE, processor.process("c-8"))
+        for (id in listOf("c-7", "c-8")) {
+            val failed = db.pendingSends().get(id)!!
+            assertEquals(SendStates.FAILED, failed.state)
+            assertEquals(SendProcessor.TOO_BIG, failed.failure)
+        }
+        assertEquals(0, server.requestCount)
     }
 
     @Test fun `an empty or invalid message fails for good with the server's sentence`() = runTest {

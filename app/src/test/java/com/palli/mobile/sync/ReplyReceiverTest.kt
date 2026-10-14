@@ -28,11 +28,22 @@ class ReplyReceiverTest {
     }
 
     @Test fun `while the app refuses this PaLLi, a reply is not queued and the thread says so in one plain line`() = runTest {
-        gate.set(true)
+        gate.heard(2)
         reply()
         assertTrue(queued.isEmpty())
         assertTrue(shown.isEmpty())
         assertEquals(listOf(ReplyReceiver.BLOCKED), notSent)
+    }
+
+    @Test fun `after a cold start, before any answer from PaLLi, a reply is refused if the last version heard was another`() = runTest {
+        val remembered = SendGate(readVersion = { 2 }, writeVersion = { })
+        ReplyReceiver.reply("on my way", remembered, { queued += it }, { shown += it }) { notSent += it }
+        assertTrue(queued.isEmpty())
+        assertEquals(listOf(ReplyReceiver.BLOCKED), notSent)
+
+        val same = SendGate(readVersion = { 1 }, writeVersion = { })
+        ReplyReceiver.reply("on my way", same, { queued += it }, { shown += it }) { notSent += it }
+        assertEquals(listOf("on my way"), queued)
     }
 
     @Test fun `a reply the queue would not take does not crash, and the thread says it was not sent`() = runTest {

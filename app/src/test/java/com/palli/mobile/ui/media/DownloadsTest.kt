@@ -73,6 +73,9 @@ class DownloadsTest {
         assertEquals("a_b_c.txt", Downloads.safeName("a\\b:c.txt"))
         assertEquals("report.pdf", Downloads.safeName("report.pdf\u0000"))
         assertEquals("Bill for March.pdf", Downloads.safeName("Bill for March.pdf"))
+        // A right-to-left override would show "invoice\u202Efdp.exe" as "invoiceexe.pdf": it is dropped, and so is a zero-width space.
+        assertEquals("invoicefdp.exe", Downloads.safeName("invoice\u202Efdp.exe"))
+        assertEquals("report.pdf", Downloads.safeName("re\u200Bport.pdf"))
         val long = Downloads.safeName("x".repeat(300) + ".pdf")
         assertTrue(long.length <= 120)
         assertTrue(long.endsWith(".pdf"))

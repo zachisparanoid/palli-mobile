@@ -21,6 +21,7 @@ import com.palli.mobile.data.session.ServerPrefs
 import com.palli.mobile.data.session.SessionStore
 import com.palli.mobile.domain.OutgoingFiles
 import com.palli.mobile.domain.SendGate
+import com.palli.mobile.domain.SendLimits
 import com.palli.mobile.domain.SendRepository
 import com.palli.mobile.domain.TimelineRepository
 import com.palli.mobile.domain.Unpairer
@@ -171,6 +172,8 @@ class ChatViewModel(
     private var doorAnsweredAt: Long? = null
 
     init {
+        // Until /me answers, sending starts from the last answer written down (another version stays refused after a restart).
+        viewModelScope.launch { logged("reading the last api version") { gate.load() } }
         checkDoor()
         // The door can open or shut while the app is open, and a phone that was offline at launch learned nothing then:
         // ask again when the stream connects. Only a connect after this start counts (the state it starts in is what the
@@ -204,6 +207,10 @@ class ChatViewModel(
      * Photos from the picker, or a document: each is copied into this send's own folder first (a picker's grant can
      * expire before the send goes, and an upload part must be a file of known length), then they are queued together with
      * any words in the box. What could not be opened is left out, and said; if nothing could be, nothing is sent.
+     *
+     * PaLLi takes at most 20 MB a file and 60 MB a send ([SendLimits]). Past either, nothing is sent, the words go back
+     * and it is said: refused before any copy when the picker says the sizes, and when it does not (or says wrong), as
+     * soon as a copy runs past them.
      */
     fun sendPicked(uris: List<Uri>, kind: String) {
         if (blocked || uris.isEmpty()) return
@@ -214,14 +221,36 @@ class ChatViewModel(
         viewModelScope.launch(io) {
             // Once picked, the send is either queued or undone, even if the chat closes meanwhile.
             withContext(NonCancellable) {
+                val resolver = context.contentResolver
+                val picked = uris.map { uri -> uri to describe(resolver, uri) }
+                val said = picked.mapNotNull { it.second.size }
+                tooBig(said.any { it > SendLimits.MAX_PART_BYTES }, said.sum() > SendLimits.MAX_SEND_BYTES)?.let {
+                    giveBack(text)
+                    tell(it)
+                    return@withContext
+                }
                 val clientId = newClientId()
-                val attachments = uris.mapNotNull { uri ->
+                val attachments = mutableListOf<LocalAttachment>()
+                var copied = 0L
+                var refused: String? = null
+                for ((uri, about) in picked) {
                     try {
-                        copyIn(context.contentResolver, outgoing, clientId, uri, kind)
+                        val a = copyIn(resolver, outgoing, clientId, uri, kind, about.name)
+                        copied += File(a.path).length()
+                        attachments += a
+                    } catch (e: OutgoingFiles.TooLarge) {
+                        refused = PART_TOO_BIG
                     } catch (e: Exception) {
                         Log.w(TAG, "a picked file could not be copied: ${e.javaClass.simpleName}")
-                        null
                     }
+                    if (refused == null && copied > SendLimits.MAX_SEND_BYTES) refused = SEND_TOO_BIG
+                    if (refused != null) break
+                }
+                refused?.let {
+                    outgoing.forget(clientId)
+                    giveBack(text)
+                    tell(it)
+                    return@withContext
                 }
                 if (attachments.isEmpty()) {
                     outgoing.forget(clientId)
@@ -254,6 +283,11 @@ class ChatViewModel(
             file.delete()
             return
         }
+        if (file.length() > SendLimits.MAX_PART_BYTES) {
+            file.delete()
+            tell(PHOTO_TOO_BIG)
+            return
+        }
         viewModelScope.launch(io) {
             withContext(NonCancellable) {
                 val clientId = newClientId()
@@ -274,10 +308,11 @@ class ChatViewModel(
         }
     }
 
-    /** Hold-to-talk begins: the note is recorded straight into its send's own folder. */
+    /** Hold-to-talk begins: the note is recorded straight into its send's own folder. Her note stops first, unheard by the mic. */
     fun startRecording() {
         if (blocked || recordingId != null) return
         val outgoing = outgoing ?: return
+        media?.player?.stop()
         val clientId = newClientId()
         try {
             recorder.start(File(outgoing.dirFor(clientId), "voice.m4a"))
@@ -399,7 +434,7 @@ class ChatViewModel(
                     .onSuccess {
                         doorAnsweredAt = clock()
                         _banner.value = DoorBanner.text(it)
-                        gate.set(it.apiVersion != Wire.API_VERSION)
+                        gate.heard(it.apiVersion)
                     }
                     .onFailure { if (it is ApiError.Unauthorized) unpaired(UNPAIRED) }
             }
@@ -463,12 +498,36 @@ class ChatViewModel(
         return restored
     }
 
+    /** The line for a pick that is too big, or null when it is not. */
+    private fun tooBig(part: Boolean, send: Boolean): String? = when {
+        part -> PART_TOO_BIG
+        send -> SEND_TOO_BIG
+        else -> null
+    }
+
+    /** What the picker says about an item: its display name and its size, either of which may be missing. */
+    private class Picked(val name: String?, val size: Long?)
+
+    private fun describe(resolver: ContentResolver, uri: Uri): Picked = try {
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (!c.moveToFirst()) return@use null
+            val name = c.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 && !c.isNull(it) }
+                ?.let { c.getString(it) }?.takeIf(String::isNotBlank)
+            val size = c.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !c.isNull(it) }?.let { c.getLong(it) }
+            Picked(name, size)
+        } ?: Picked(null, null)
+    } catch (e: Exception) {
+        Picked(null, null)                                       // the copy then says whether it can be read at all
+    }
+
     /**
-     * One picked item, copied into the send's folder. Its `name` is what the picker calls it (the copy's own file name
-     * has a random prefix); its type is what the picker says, else what the name's extension says.
+     * One picked item, copied into the send's folder (at most [SendLimits.MAX_PART_BYTES] of it). Its `name` is what the
+     * picker calls it (the copy's own file name has a random prefix); its type is what the picker says, else what the
+     * name's extension says.
      */
-    private fun copyIn(resolver: ContentResolver, outgoing: OutgoingFiles, clientId: String, uri: Uri, kind: String): LocalAttachment {
-        val shown = displayName(resolver, uri)
+    private fun copyIn(
+        resolver: ContentResolver, outgoing: OutgoingFiles, clientId: String, uri: Uri, kind: String, shown: String?,
+    ): LocalAttachment {
         val mime = resolver.getType(uri)
             ?: shown?.substringAfterLast('.', "")?.lowercase()?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
             ?: "application/octet-stream"
@@ -477,11 +536,6 @@ class ChatViewModel(
         val image = kind == "image" || mime.startsWith("image/")
         return LocalAttachment(copy.path, if (image) "image" else "file", mime, name)
     }
-
-    private fun displayName(resolver: ContentResolver, uri: Uri): String? =
-        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-            if (it.moveToFirst() && !it.isNull(0)) it.getString(0)?.takeIf(String::isNotBlank) else null
-        }
 
     private fun fallbackName(mime: String): String {
         val stem = if (mime.startsWith("image/")) "photo" else "file"
@@ -527,6 +581,9 @@ class ChatViewModel(
         const val PHOTO_FAILED = "Couldn't send that photo. Take it again to try once more."
         const val VOICE_FAILED = "Couldn't send that voice note. Record it again to try once more."
         const val PICK_UNREADABLE = "Couldn't open what you picked, so nothing was sent."
+        const val PART_TOO_BIG = "That file is over 20 MB — too big to send."
+        const val SEND_TOO_BIG = "Those come to over 60 MB together — too big to send at once."
+        const val PHOTO_TOO_BIG = "That photo is over 20 MB — too big to send."
         const val SOME_UNREADABLE = "Some of what you picked couldn't be opened, so it was left out."
         const val MIC_FAILED = "Couldn't start the microphone."
         const val HOLD_TO_RECORD = "Hold the microphone down while you talk, then let go to send."

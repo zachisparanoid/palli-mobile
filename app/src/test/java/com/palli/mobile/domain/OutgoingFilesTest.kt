@@ -41,6 +41,25 @@ class OutgoingFilesTest {
         assertEquals(outgoing.dirFor("c-2").canonicalFile, copy.parentFile!!.canonicalFile)
     }
 
+    @Test fun `a copy that runs past its limit stops, says so, and leaves no partial file`() {
+        val error = runCatching { outgoing.copyIn("c-5", picked("big.bin", *ByteArray(11)), "big.bin", maxBytes = 10) }
+            .exceptionOrNull()
+        assertTrue(error is OutgoingFiles.TooLarge)
+        assertEquals(0, outgoing.dirFor("c-5").listFiles()!!.size)
+
+        val exact = outgoing.copyIn("c-5", picked("edge.bin", *ByteArray(10)), "edge.bin", maxBytes = 10)
+        assertEquals(10L, exact.length())
+    }
+
+    @Test fun `by default a copy may be as big as one part PaLLi takes, and no bigger`() {
+        val big = tmp.newFile("big.bin").apply {
+            java.io.RandomAccessFile(this, "rw").use { it.setLength(SendLimits.MAX_PART_BYTES + 1) }
+        }
+        val error = runCatching { outgoing.copyIn("c-6", Uri.fromFile(big), "big.bin") }.exceptionOrNull()
+        assertTrue(error is OutgoingFiles.TooLarge)
+        assertEquals(0, outgoing.dirFor("c-6").listFiles()!!.size)
+    }
+
     @Test fun `forgetting a send removes its folder and no other`() {
         outgoing.copyIn("c-3", picked("a.bin", 1), "a.jpg")
         outgoing.copyIn("c-4", picked("b.bin", 1), "b.jpg")

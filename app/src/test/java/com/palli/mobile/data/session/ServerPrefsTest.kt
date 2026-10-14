@@ -30,4 +30,20 @@ class ServerPrefsTest {
         assertEquals(false, again.askedBattery())                   // and it is its own flag
         second.cancel()
     }
+
+    @Test fun `the last api version heard survives a cold start, and goes with the pairing`() = runTest {
+        val file = tmp.newFile("v.preferences_pb")
+        val first = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val prefs = ServerPrefs(PreferenceDataStoreFactory.create(scope = first) { file })
+        assertEquals(null, prefs.lastApiVersion())
+        prefs.setLastApiVersion(2)
+        first.cancel()
+
+        val second = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val again = ServerPrefs(PreferenceDataStoreFactory.create(scope = second) { file })
+        assertEquals(2, again.lastApiVersion())
+        again.clearPairing()
+        assertEquals(null, again.lastApiVersion())
+        second.cancel()
+    }
 }

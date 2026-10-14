@@ -95,16 +95,22 @@ class ChatViewModelMediaTest {
 
     /** What a picker hands back: content URIs with a display name and a type, as the system's do. */
     class FakePicker : ContentProvider() {
-        class Item(val name: String?, val mime: String?, val file: File?)
+        /** [size] is what the picker says, which may be missing (null) or wrong. */
+        class Item(val name: String?, val mime: String?, val file: File?, val size: Long?)
         val items = mutableMapOf<String, Item>()
+        var opened = 0
 
         override fun onCreate() = true
         override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor? {
             val item = items[uri.lastPathSegment] ?: return null
-            return MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME)).apply { addRow(arrayOf(item.name)) }
+            val columns = projection ?: arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+            return MatrixCursor(columns).apply {
+                addRow(columns.map { if (it == OpenableColumns.SIZE) item.size else item.name }.toTypedArray())
+            }
         }
         override fun getType(uri: Uri): String? = items[uri.lastPathSegment]?.mime
         override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            opened++
             val file = items[uri.lastPathSegment]?.file ?: throw FileNotFoundException("the grant has expired")
             return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
         }
@@ -115,10 +121,16 @@ class ChatViewModelMediaTest {
 
     private val picker: FakePicker = Robolectric.setupContentProvider(FakePicker::class.java, PICKER)
 
-    private fun picked(id: String, name: String?, mime: String?, bytes: ByteArray?): Uri {
-        picker.items[id] = FakePicker.Item(name, mime, bytes?.let { tmp.newFile().apply { writeBytes(it) } })
+    private fun picked(id: String, name: String?, mime: String?, bytes: ByteArray?, size: Long? = bytes?.size?.toLong()): Uri {
+        picker.items[id] = FakePicker.Item(name, mime, bytes?.let { tmp.newFile().apply { writeBytes(it) } }, size)
         return Uri.parse("content://$PICKER/items/$id")
     }
+
+    /** A file of [length] bytes that takes no room on disk. */
+    private fun sparse(length: Long, dir: File = tmp.root): File =
+        File.createTempFile("big", ".bin", dir).apply { java.io.RandomAccessFile(this, "rw").use { it.setLength(length) } }
+
+    private val mb = 1024L * 1024
 
     /** Writes a small note where it is told to, as MediaRecorder would. */
     private inner class FakeRecorder : Recorder {
@@ -279,6 +291,74 @@ class ChatViewModelMediaTest {
         assertFalse(folder("c-2").exists())
     }
 
+    // ---- PaLLi's limits: 20 MB a file, 60 MB a send ----
+
+    @Test fun `a pick the picker says is over 20 MB is refused before anything is copied, and the words go back`() {
+        val vm = viewModel()
+        vm.onDraft("caption")
+        vm.sendPicked(listOf(picked("20", "film.mp4", "video/mp4", byteArrayOf(1), size = 21 * mb)), "file")
+
+        assertEquals(0, picker.opened)
+        assertTrue(queued.isEmpty())
+        assertTrue(nothingCopied())
+        assertEquals(ChatViewModel.PART_TOO_BIG, vm.notice.value)
+        assertEquals("caption", vm.draft.value)
+    }
+
+    @Test fun `a pick whose size is not said but runs past 20 MB is refused, and leaves no partial copy`() {
+        picker.items["21"] = FakePicker.Item("dump.bin", "application/octet-stream", sparse(20 * mb + 1), size = null)
+        val vm = viewModel()
+        vm.onDraft("caption")
+        vm.sendPicked(listOf(picked("22", "small.txt", "text/plain", byteArrayOf(1)), Uri.parse("content://$PICKER/items/21")), "file")
+
+        assertTrue(queued.isEmpty())
+        assertTrue("no partial file and no folder", nothingCopied())
+        assertFalse(folder("c-1").exists())
+        assertEquals(ChatViewModel.PART_TOO_BIG, vm.notice.value)
+        assertEquals("caption", vm.draft.value)
+    }
+
+    @Test fun `three 19 MB picks, 57 MB in all, go`() {
+        val vm = viewModel()
+        vm.sendPicked((1..3).map { picked("3$it", "p$it.jpg", "image/jpeg", byteArrayOf(1), size = 19 * mb) }, "image")
+        assertEquals(3, queued.single().attachments.size)
+        assertNull(vm.notice.value)
+    }
+
+    @Test fun `four 19 MB picks, 76 MB in all, are refused before anything is copied`() {
+        val vm = viewModel()
+        vm.onDraft("caption")
+        vm.sendPicked((1..4).map { picked("4$it", "p$it.jpg", "image/jpeg", byteArrayOf(1), size = 19 * mb) }, "image")
+        assertEquals(0, picker.opened)
+        assertTrue(queued.isEmpty())
+        assertEquals(ChatViewModel.SEND_TOO_BIG, vm.notice.value)
+        assertEquals("caption", vm.draft.value)
+    }
+
+    @Test fun `picks whose sizes are not said but come to over 60 MB are refused, and leave nothing behind`() {
+        val parts = (1..4).map { i ->
+            picker.items["5$i"] = FakePicker.Item("p$i.bin", "application/octet-stream", sparse(16 * mb), size = null)
+            Uri.parse("content://$PICKER/items/5$i")
+        }
+        val vm = viewModel()
+        vm.sendPicked(parts, "file")
+        assertTrue(queued.isEmpty())
+        assertTrue(nothingCopied())
+        assertEquals(ChatViewModel.SEND_TOO_BIG, vm.notice.value)
+    }
+
+    @Test fun `a camera photo over 20 MB is not sent, not kept, and said`() {
+        val vm = viewModel()
+        vm.onDraft("typed")
+        val shot = vm.newCameraFile()!!.also { it.delete() }
+        val big = sparse(20 * mb + 1, shot.parentFile!!)
+        vm.sendCameraPhoto(big)
+        assertTrue(queued.isEmpty())
+        assertFalse(big.exists())
+        assertEquals(ChatViewModel.PHOTO_TOO_BIG, vm.notice.value)
+        assertEquals("typed", vm.draft.value)
+    }
+
     // ---- the camera ----
 
     private fun cameraShot(vm: ChatViewModel): File = vm.newCameraFile()!!.apply { writeBytes(ByteArray(512) { 7 }) }
@@ -320,6 +400,18 @@ class ChatViewModelMediaTest {
         val a = queued.single().attachments.single()
         assertEquals(LocalAttachment(File(folder("c-1"), "voice.m4a").path, "voice", "audio/mp4", "voice.m4a", 4_200L), a)
         assertEquals(VOICE.size.toLong(), partLength(a))
+    }
+
+    @Test fun `holding the microphone stops her voice note first, so the mic does not hear her`() {
+        val media = chatMedia()
+        media.player.toggle("f_her", tmp.newFile("her.ogg").apply { writeBytes(byteArrayOf(0x4f, 0x67, 0x67, 0x53)) })
+        assertEquals("f_her", media.player.state.value.playingId)
+
+        val vm = viewModel(media = media)
+        vm.startRecording()
+        assertNull(media.player.state.value.playingId)
+        assertEquals(true, vm.recording.value)
+        vm.cancelRecording()
     }
 
     @Test fun `a slip of the thumb sends nothing, leaves nothing behind, and says how to record`() {
@@ -482,9 +574,26 @@ class ChatViewModelMediaTest {
         assertEquals(false, gate.blocked.value)
     }
 
+    @Test fun `after a cold start the last version heard blocks media before PaLLi answers again`() {
+        val remembered = SendGate(readVersion = { 2 }, writeVersion = { })
+        val vm = ChatViewModel(
+            observe = { flowOf(emptyList()) }, enqueue = { }, retrySend = { }, sendTyping = { }, eventCount = { 0 },
+            minId = { null }, insertNew = { it }, api = { null },          // no answer from /me yet
+            unpaired = { }, askedNotifications = { true }, markAskedNotifications = { },
+            herTyping = MutableStateFlow(false), connection = connection, clock = { now },
+            newClientId = { "c-${++ids}" }, enqueueWith = { _, a, id -> queued += Queued("", a, id) },
+            context = context, outgoing = outgoing, recorder = recorder, gate = remembered, io = Dispatchers.Unconfined,
+        )
+        assertEquals(true, vm.sendingBlocked.value)
+        vm.sendPicked(listOf(picked("60", "a.jpg", "image/jpeg", byteArrayOf(1))), "image")
+        vm.startRecording()
+        assertTrue(queued.isEmpty())
+        assertNull(recorder.recordingTo)
+    }
+
     // ---- what came of saving her file ----
 
-    @Test fun `what came of saving her file is said over the composer`() = runTest {
+    private fun chatMedia(): ChatMedia {
         val store = PreferenceDataStoreFactory.create(scope = CoroutineScope(Dispatchers.IO + SupervisorJob())) {
             tmp.newFile("s.preferences_pb")
         }
@@ -492,9 +601,13 @@ class ChatViewModelMediaTest {
             override fun encrypt(plain: String) = plain
             override fun decrypt(blob: String) = blob
         })
-        val media = ChatMedia(ImageLoader.Builder(context).build(), VoicePlayer(context),
+        return ChatMedia(ImageLoader.Builder(context).build(), VoicePlayer(context),
             FileCache(context, OkHttpClient(), sessions), session = { null },
             saveFile = { _, _, _ -> error("not reached") }, scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined))
+    }
+
+    @Test fun `what came of saving her file is said over the composer`() = runTest {
+        val media = chatMedia()
         val vm = viewModel(media = media)
 
         media.download(FileRef("f_1", "a.pdf"))                    // unpaired: the fetch cannot be made

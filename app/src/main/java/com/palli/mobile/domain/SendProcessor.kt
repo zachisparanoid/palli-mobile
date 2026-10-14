@@ -30,6 +30,12 @@ class SendProcessor @Inject constructor(
             pending.setState(clientId, SendStates.FAILED, "A file for this message is gone from the phone.")
             return Outcome.DONE
         }
+        // The chat refuses these before queueing them; this holds for anything else. PaLLi would refuse it for good, and
+        // past 60 MB her early 413 can reach the phone as a broken pipe, which would otherwise be retried for ever.
+        if (!SendLimits.fits(send.attachments().map { File(it.path).length() })) {
+            pending.setState(clientId, SendStates.FAILED, TOO_BIG)
+            return Outcome.DONE
+        }
         pending.setState(clientId, SendStates.SENDING, null)
         pending.bumpAttempts(clientId)
         val error = apiCall { apis.forBase(session.baseUrl).send(buildParts(send)) }.exceptionOrNull()
@@ -44,6 +50,8 @@ class SendProcessor @Inject constructor(
     }
 
     companion object {
+        const val TOO_BIG = "Too big to send: over 20 MB for one file, or 60 MB in all."
+
         fun buildParts(send: PendingSendEntity): List<MultipartBody.Part> = buildList {
             add(MultipartBody.Part.createFormData("client_id", send.clientId))
             if (send.text.isNotBlank()) add(MultipartBody.Part.createFormData("text", send.text))

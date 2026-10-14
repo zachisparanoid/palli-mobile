@@ -51,7 +51,7 @@ class ReplyReceiver : BroadcastReceiver() {
             shown: (String) -> Unit,
             notSent: (String) -> Unit,
         ) {
-            if (gate.blocked.value) {
+            if (gate.isBlocked()) {
                 say { notSent(BLOCKED) }
                 return
             }

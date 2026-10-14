@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +25,7 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
         val STAY_CONNECTED = booleanPreferencesKey("stay_connected")
         val ASKED_BATTERY = booleanPreferencesKey("asked_battery")
         val ASKED_NOTIFICATIONS = booleanPreferencesKey("asked_notifications")
+        val LAST_API_VERSION = intPreferencesKey("last_api_version")
     }
 
     suspend fun read(): Stored = store.data.first().let {
@@ -40,6 +42,7 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
     suspend fun clearPairing() {
         store.edit {
             it.remove(Keys.BASE_URL); it.remove(Keys.DEVICE_ID); it.remove(Keys.DEVICE_NAME); it.remove(Keys.TOKEN_BLOB)
+            it.remove(Keys.LAST_API_VERSION)           // it was that server's; the next one says its own
         }
     }
 
@@ -53,4 +56,8 @@ class ServerPrefs @Inject constructor(private val store: DataStore<Preferences>)
     /** Whether the system's notification question has been put to the owner. Asked once ever, so a denial is remembered. */
     suspend fun askedNotifications(): Boolean = store.data.first()[Keys.ASKED_NOTIFICATIONS] ?: false
     suspend fun markAskedNotifications() { store.edit { it[Keys.ASKED_NOTIFICATIONS] = true } }
+
+    /** The `api_version` the paired PaLLi last reported on `/me`; null before any answer. Read again after a cold start. */
+    suspend fun lastApiVersion(): Int? = store.data.first()[Keys.LAST_API_VERSION]
+    suspend fun setLastApiVersion(version: Int) { store.edit { it[Keys.LAST_API_VERSION] = version } }
 }

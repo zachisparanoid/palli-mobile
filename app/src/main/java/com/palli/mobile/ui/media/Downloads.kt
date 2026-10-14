@@ -34,11 +34,12 @@ object Downloads {
 
     /**
      * A name that is only a name: no folders (its last segment is kept), no characters a storage volume refuses, no
-     * control characters, no leading dot (no hidden file, no "..") and not overlong. Blank becomes "file".
+     * control characters, no invisible format characters (a right-to-left override would let "invoice\u202Efdp.exe"
+     * show as "invoiceexe.pdf"), no leading dot (no hidden file, no "..") and not overlong. Blank becomes "file".
      */
     fun safeName(filename: String): String {
         val cleaned = filename.substringAfterLast('/')
-            .filter { it >= ' ' && it != '\u007f' }
+            .filter { it >= ' ' && it != '\u007f' && Character.getType(it) != Character.FORMAT.toInt() }
             .replace(Regex("""[\\:*?"<>|]"""), "_")
             .trimStart('.', ' ')
             .trimEnd('.', ' ')

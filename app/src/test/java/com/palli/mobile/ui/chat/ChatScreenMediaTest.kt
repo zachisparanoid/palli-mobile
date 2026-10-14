@@ -10,6 +10,10 @@ import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -65,6 +69,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -263,6 +268,38 @@ class ChatScreenMediaTest {
             FileCache(app, client, sessions), session = { sessions.current },
             saveFile = { _, name, _ -> Downloads.Saved(Uri.parse("content://media/external/downloads/1"), saved(name)) },
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default))
+    }
+
+    // ---- no sound without its control on screen ----
+
+    private fun herNote() = tmp.newFile("her.ogg").apply { writeBytes(byteArrayOf(0x4f, 0x67, 0x67, 0x53)) }
+
+    @Test fun `her note stops when the chat leaves the screen`() {
+        val m = media { "x" }
+        val vm = viewModel(m)
+        var showing by mutableStateOf(true)
+        compose.setContent {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
+                PalliTheme { if (showing) ChatScreen({}, {}, vm) }
+            }
+        }
+        compose.runOnUiThread { m.player.toggle("f_her", herNote()) }
+        assertEquals("f_her", m.player.state.value.playingId)
+
+        showing = false                                             // Settings or Reminders opened, or the chat popped
+        compose.waitForIdle()
+        assertNull(m.player.state.value.playingId)
+    }
+
+    @Test fun `her note stops when the app goes to the background`() {
+        val m = media { "x" }
+        show(viewModel(m))
+        compose.runOnUiThread { m.player.toggle("f_her", herNote()) }
+        assertEquals("f_her", m.player.state.value.playingId)
+
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)   // stopped: the app is out of sight
+        assertNull(m.player.state.value.playingId)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
     }
 
     @Test fun `tapping her file saves it, and a line over the composer says where it went`() {

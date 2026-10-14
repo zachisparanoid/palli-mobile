@@ -199,6 +199,21 @@ class ChatScreenTest {
         assertTrue("hers ends in the left half (${hers.right} of $width)", hers.right.value < width / 2)
     }
 
+    @Test fun `a short chat sits at the bottom, just above the composer, newest lowest`() {
+        items.value = listOf(hers(1, "older"), mine("e2", "newest"))
+        show()
+        compose.waitForIdle()
+        val list = compose.onNode(hasScrollAction()).getUnclippedBoundsInRoot()
+        val newest = compose.onNodeWithText("newest").getUnclippedBoundsInRoot()
+        val older = compose.onNodeWithText("older").getUnclippedBoundsInRoot()
+
+        assertTrue("the newest is near the list's bottom (${newest.bottom} vs ${list.bottom})",
+            list.bottom.value - newest.bottom.value < 40f)
+        assertTrue("and well below its middle (${newest.top} vs ${list.top}..${list.bottom})",
+            newest.top.value > (list.top.value + list.bottom.value) / 2)
+        assertTrue("the older sits above it", older.bottom.value <= newest.top.value)
+    }
+
     @Test fun `another api version shows the update banner and switches the composer off`() {
         version = 2
         show()
