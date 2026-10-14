@@ -22,6 +22,11 @@ sealed class ApiError(message: String) : Exception(message) {
     data class DoorClosed(val reason: String) : ApiError(reason)        // 503 {"detail":{"reason":…}}
     data class Unreachable(val error: Throwable) : ApiError(error.message ?: "unreachable")
     data class Server(val code: Int, val detail: String) : ApiError(detail)
+
+    companion object {
+        /** A 2xx whose body this app could not read: the detail of the [Server] error (code 200) it becomes. */
+        const val UNREADABLE = "PaLLi answered in a way this app doesn't understand."
+    }
 }
 
 suspend fun <T> apiCall(block: suspend () -> T): Result<T> = try {
@@ -35,7 +40,8 @@ suspend fun <T> apiCall(block: suspend () -> T): Result<T> = try {
 } catch (e: IOException) {
     Result.failure(ApiError.Unreachable(e))
 } catch (e: SerializationException) {
-    Result.failure(ApiError.Server(200, "PaLLi answered in a shape this app does not read: ${e.message}"))
+    // Never the parser's message: it quotes the answer, and a pairing answer holds the token.
+    Result.failure(ApiError.Server(200, ApiError.UNREADABLE))
 }
 
 fun HttpException.toApiError(): ApiError {

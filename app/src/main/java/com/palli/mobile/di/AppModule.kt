@@ -48,12 +48,19 @@ object AppModule {
     @Provides @Singleton
     fun okHttp(sessions: SessionStore): OkHttpClient = OkHttpClient.Builder()
         .addInterceptor(AuthInterceptor { sessions.current })
-        // BASIC logs the method, URL and status only — never headers, so the token never reaches logcat.
-        .addInterceptor(HttpLoggingInterceptor().apply {
-            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
-        })
+        .addInterceptor(httpLogging(BuildConfig.DEBUG))
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(120, TimeUnit.SECONDS)          // a 20 MB upload on a slow link
         .build()
+
+    /**
+     * BASIC in a debug build (the method, URL and status, never a header) and NONE in a release, so the token never
+     * reaches logcat. The Authorization header is redacted as well, for the day someone raises the level to look.
+     */
+    fun httpLogging(debug: Boolean, logger: HttpLoggingInterceptor.Logger = HttpLoggingInterceptor.Logger.DEFAULT) =
+        HttpLoggingInterceptor(logger).apply {
+            redactHeader("Authorization")
+            level = if (debug) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
+        }
 }

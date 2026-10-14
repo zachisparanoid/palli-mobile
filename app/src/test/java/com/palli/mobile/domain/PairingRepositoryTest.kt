@@ -27,6 +27,7 @@ import com.palli.mobile.data.session.TokenCipher
 import com.palli.mobile.sync.SendWorker
 import com.palli.mobile.ui.media.FileCache
 import com.palli.mobile.ui.media.MediaCaches
+import com.palli.mobile.ui.pair.PairErrors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -271,6 +272,17 @@ class PairingRepositoryTest {
 
         assertTrue(herFolder.exists())
         assertEquals("pmd_test", sessions.current!!.token)
+    }
+
+    @Test fun `a pairing answer this app cannot read shows a fixed sentence, and never the answer, which holds the token`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"token":"pmd_new_token","device_id":"two","api_version":1}"""))
+        val base = server.url("/").toString().trimEnd('/')
+        val error = repo.pair(base, "K7QM-2XPA", "Phone").exceptionOrNull()!!
+
+        val said = PairErrors.message(error, base)
+        assertEquals("Pairing failed: PaLLi answered in a way this app doesn't understand.", said)
+        assertFalse(said, said.contains("pmd_new_token"))
+        assertEquals("pmd_test", sessions.current!!.token)                // and nothing was saved
     }
 
     // ---- a server that never answers ----

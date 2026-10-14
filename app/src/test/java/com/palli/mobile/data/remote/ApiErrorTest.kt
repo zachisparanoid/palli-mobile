@@ -6,6 +6,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -51,6 +52,13 @@ class ApiErrorTest {
         assertEquals(ApiError.DoorClosed("door_closed"), meFails(503, """{"detail":{"reason":{}}}"""))
         // A validation list whose "msg" is not a string is skipped, not fatal.
         assertTrue(meFails(422, """{"detail":[{"msg":{}},{"msg":"bad"}]}""") is ApiError.Rejected)
+    }
+
+    @Test fun `an answer in a shape this app does not read is a fixed sentence, never the parser's words`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"device":{"id":"pmd_secret_looking"},"door_state":1}"""))
+        val error = apiCall { api.me() }.exceptionOrNull()
+        assertEquals(ApiError.Server(200, ApiError.UNREADABLE), error)
+        assertFalse(error!!.message!!.contains("pmd_secret_looking"))
     }
 
     @Test fun `a server that is not there is Unreachable`() = runTest {
