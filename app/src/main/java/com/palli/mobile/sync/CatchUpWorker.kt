@@ -32,7 +32,8 @@ class CatchUpWorker @AssistedInject constructor(
             val request = PeriodicWorkRequestBuilder<CatchUpWorker>(15, TimeUnit.MINUTES)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
-            work.enqueueUniquePeriodicWork("palli-catch-up", ExistingPeriodicWorkPolicy.KEEP, request)
+            // UPDATE, not KEEP: a later build's interval or constraints reach a phone that already has the work.
+            work.enqueueUniquePeriodicWork("palli-catch-up", ExistingPeriodicWorkPolicy.UPDATE, request)
         }
     }
 }

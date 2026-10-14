@@ -2,10 +2,17 @@ package com.palli.mobile.sync
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ListenableWorker
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
+import androidx.work.testing.WorkManagerTestInitHelper
 import com.palli.mobile.data.remote.ApiFactory
 import com.palli.mobile.data.remote.EventDto
 import com.palli.mobile.data.session.Session
@@ -25,6 +32,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.util.concurrent.TimeUnit
 
 /** The real worker over a real processor (MockWebServer) and a real controller whose service calls are recorded. */
 @RunWith(RobolectricTestRunner::class)
@@ -88,5 +96,22 @@ class CatchUpWorkerTest {
         val failure = runCatching { worker().doWork() }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
         assertEquals(listOf("start"), serviceCalls)
+    }
+
+    @Test fun `scheduling updates what an earlier install scheduled, so a new interval or constraint reaches the phone`() {
+        WorkManagerTestInitHelper.initializeTestWorkManager(context)
+        val work = WorkManager.getInstance(context)
+        // What an earlier install scheduled, still waiting its turn: another interval, another constraint.
+        val earlier = PeriodicWorkRequestBuilder<CatchUpWorker>(30, TimeUnit.MINUTES)
+            .setConstraints(Constraints.Builder().setRequiresCharging(true).build()).build()
+        work.enqueueUniquePeriodicWork("palli-catch-up", ExistingPeriodicWorkPolicy.KEEP, earlier)
+        assertEquals(WorkInfo.State.ENQUEUED, work.getWorkInfoById(earlier.id).get()!!.state)
+
+        CatchUpWorker.schedule(work)
+
+        val info = work.getWorkInfosForUniqueWork("palli-catch-up").get().single()
+        assertEquals(TimeUnit.MINUTES.toMillis(15), info.periodicityInfo!!.repeatIntervalMillis)
+        assertEquals(NetworkType.CONNECTED, info.constraints.requiredNetworkType)
+        assertEquals(false, info.constraints.requiresCharging())
     }
 }

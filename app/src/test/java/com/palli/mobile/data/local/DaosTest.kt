@@ -111,4 +111,12 @@ class DaosTest {
         assertEquals(1_234L, dao.get("c1")!!.acceptedAt)
         assertNull(dao.get("c1")!!.failure)
     }
+
+    @Test fun `pending sends of the same millisecond come in client id order, every time`() = runTest {
+        val dao = db.pendingSends()
+        dao.upsert(PendingSendEntity("b", "second", "[]", SendStates.QUEUED, null, 5L, 0))
+        dao.upsert(PendingSendEntity("a", "first", "[]", SendStates.QUEUED, null, 5L, 0))
+        dao.upsert(PendingSendEntity("z", "earlier", "[]", SendStates.QUEUED, null, 4L, 0))
+        assertEquals(listOf("z", "a", "b"), dao.observeAll().first().map { it.clientId })
+    }
 }

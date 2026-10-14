@@ -73,13 +73,16 @@ class SendProcessor @Inject constructor(
         pending.setState(clientId, SendStates.SENDING, null)
         pending.bumpAttempts(clientId)
         val error = apiCall { apis.forBase(session.baseUrl).send(buildParts(send)) }.exceptionOrNull()
-        return when (error) {
+        // A 2xx whose body this app cannot read (ApiError.UNREADABLE, code 200) is accepted too: PaLLi took the send, and
+        // her dedupe would only answer 202 again, for ever.
+        val accepted = error == null || (error is ApiError.Server && error.code == 200)
+        return when {
             // When she took it: if her record of it never comes, it becomes "Not delivered" (SendRepository.expireUnrecorded).
-            null -> { pending.setAccepted(clientId, System.currentTimeMillis()); Outcome.DONE }
-            is ApiError.TooLarge, is ApiError.Rejected -> {
+            accepted -> { pending.setAccepted(clientId, System.currentTimeMillis()); Outcome.DONE }
+            error is ApiError.TooLarge || error is ApiError.Rejected -> {
                 pending.setState(clientId, SendStates.FAILED, error.message); Outcome.DONE
             }
-            is ApiError.Unauthorized -> { unpairer.unpaired("This phone was unpaired."); Outcome.UNPAIRED }
+            error is ApiError.Unauthorized -> { unpairer.unpaired("This phone was unpaired."); Outcome.UNPAIRED }
             else -> { pending.setState(clientId, SendStates.QUEUED, null); Outcome.RETRY }
         }
     }

@@ -24,7 +24,8 @@ interface EventDao {
 
 @Dao
 interface PendingSendDao {
-    @Query("SELECT * FROM pending_sends ORDER BY createdAt") fun observeAll(): Flow<List<PendingSendEntity>>
+    /** Oldest first; two of the same millisecond by client id, so they never swap places between emissions. */
+    @Query("SELECT * FROM pending_sends ORDER BY createdAt, clientId") fun observeAll(): Flow<List<PendingSendEntity>>
     @Upsert suspend fun upsert(entity: PendingSendEntity)
     @Query("SELECT * FROM pending_sends WHERE clientId = :clientId") suspend fun get(clientId: String): PendingSendEntity?
     @Query("UPDATE pending_sends SET state = :state, failure = :failure WHERE clientId = :clientId")

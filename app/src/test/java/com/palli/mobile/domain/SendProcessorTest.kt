@@ -97,6 +97,28 @@ class SendProcessorTest {
         assertTrue(first.contains("c-2") && second.contains("c-2"))
     }
 
+    @Test fun `a 2xx this app cannot read is taken as accepted, not retried for ever`() = runTest {
+        // PaLLi took it, and her dedupe would only answer 202 again; if she never records it, "Not delivered" is the backstop.
+        queue("c-13", "hello")
+        server.enqueue(MockResponse().setResponseCode(202).setBody("accepted, in a shape from the future"))
+        queue("c-14", "again")
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        for (id in listOf("c-13", "c-14")) {
+            assertEquals(SendProcessor.Outcome.DONE, processor.process(id))
+            assertEquals(SendStates.ACCEPTED, db.pendingSends().get(id)!!.state)
+            assertTrue(db.pendingSends().get(id)!!.acceptedAt != null)
+        }
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun `a 5xx is still trouble that may pass`() = runTest {
+        queue("c-15", "hello")
+        server.enqueue(MockResponse().setResponseCode(500).setBody("{\"detail\":\"boom\"}"))
+        assertEquals(SendProcessor.Outcome.RETRY, processor.process("c-15"))
+        assertEquals(SendStates.QUEUED, db.pendingSends().get("c-15")!!.state)
+    }
+
     @Test fun `too large or refused fails for good, with the reason`() = runTest {
         queue("c-3", "big")
         server.enqueue(MockResponse().setResponseCode(413).setBody("""{"detail":"cat.jpg is over 20 MB."}"""))
