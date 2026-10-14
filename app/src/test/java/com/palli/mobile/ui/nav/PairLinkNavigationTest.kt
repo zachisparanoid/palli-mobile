@@ -41,6 +41,8 @@ class PairLinkNavigationTest {
     private val address = "http://palli-box.example.ts.net:8000"
     private val link = "palli://pair?u=http%3A%2F%2Fpalli-box.example.ts.net%3A8000&c=K7QM-2XPA"
     private val question = "Pair with $address?"
+    /** What only the chat screen shows: the composer's hint. */
+    private val chatHint = "Message PaLLi"
     private var scenario: ActivityScenario<MainActivity>? = null
 
     @After fun tearDown() { scenario?.close() }
@@ -142,7 +144,7 @@ class PairLinkNavigationTest {
     @Test fun `a link on a cold start while paired is ignored, and does not wait to ambush a later unpair`() {
         val session = pairThisPhone()
         launch(link)
-        waitFor("Paired.")
+        waitFor(chatHint)
         compose.waitForIdle()
         assertAbsent("Pair with PaLLi")
         assertAbsent(question)
@@ -157,7 +159,7 @@ class PairLinkNavigationTest {
     @Test fun `a link that reaches the running chat is ignored, and does not wait to ambush a later unpair`() {
         val session = pairThisPhone()
         launch()
-        waitFor("Paired.")
+        waitFor(chatHint)
         deliver(link)
         compose.waitForIdle()
         assertAbsent("Pair with PaLLi")
@@ -174,10 +176,10 @@ class PairLinkNavigationTest {
     @Test fun `losing the session anywhere comes back to Pair`() {
         pairThisPhone()
         launch()
-        waitFor("Paired.")
+        waitFor(chatHint)
         unpairThisPhone()
         waitFor("Pair with PaLLi")
         assertNull(app.sessions.current)
-        assertAbsent("Paired.")
+        assertAbsent(chatHint)
     }
 }

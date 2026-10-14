@@ -44,4 +44,12 @@ class TimelineRepositoryTest {
         assertEquals(emptyList<PendingSendEntity>(), db.pendingSends().observeAll().first())
         assertEquals(listOf("e9"), repo.observe(50).first().map { it.key })
     }
+
+    @Test fun `the count is of every event held, not of the ones in view`() = runTest {
+        assertEquals(0, repo.eventCount())
+        repo.insertNew((1L..5L).map(::hers))
+        repo.insertNew(listOf(hers(5), hers(6)))
+        assertEquals(6, repo.eventCount())
+        assertEquals(3, repo.observe(3).first().size)
+    }
 }

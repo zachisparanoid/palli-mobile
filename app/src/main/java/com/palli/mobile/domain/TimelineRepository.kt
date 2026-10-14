@@ -37,6 +37,8 @@ class TimelineRepository @Inject constructor(
 
     suspend fun maxId(): Long = db.events().maxId() ?: 0L
     suspend fun minId(): Long? = db.events().minId()
+    /** How many events this phone holds, however many the chat is showing. */
+    suspend fun eventCount(): Int = db.events().count()
 
     suspend fun clear() {
         db.withTransaction { db.events().clear(); db.pendingSends().clear() }

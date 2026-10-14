@@ -18,6 +18,7 @@ interface EventDao {
 
     @Query("SELECT MAX(id) FROM events") suspend fun maxId(): Long?
     @Query("SELECT MIN(id) FROM events") suspend fun minId(): Long?
+    @Query("SELECT COUNT(*) FROM events") suspend fun count(): Int
     @Query("DELETE FROM events") suspend fun clear()
 }
 
