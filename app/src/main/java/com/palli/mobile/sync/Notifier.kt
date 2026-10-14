@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
@@ -20,9 +21,19 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** [clock] is monotonic milliseconds; the primary constructor takes it so a test can hold time still. */
 @Singleton
-class Notifier @Inject constructor(@ApplicationContext private val context: Context) {
+class Notifier(private val context: Context, private val clock: () -> Long) {
+    @Inject constructor(@ApplicationContext context: Context) : this(context, SystemClock::elapsedRealtime)
+
     companion object {
+        /**
+         * Who a notice is from in the thread: not PaLLi, since a notice is words that are not hers (a failed turn, a
+         * spending note). The chat shows a notice as a plain line with no sender; this is the plainest name for one.
+         */
+        const val NOTICE_SENDER = "Notice"
+        /** The least time between two buzzes for her messages: a replay of many is one buzz. */
+        const val ALERT_GAP_MS = 2_000L
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_CONNECTION = "connection"
         const val ID_CONVERSATION = 1
@@ -44,6 +55,9 @@ class Notifier @Inject constructor(@ApplicationContext private val context: Cont
     }
     private val me by lazy { Person.Builder().setName("You").build() }
     private val notSent by lazy { Person.Builder().setName("Not sent").build() }
+    private val notices by lazy { Person.Builder().setName(NOTICE_SENDER).setKey("notice").build() }
+    /** When the thread last buzzed; null before it ever has. */
+    private var lastAlertAt: Long? = null
 
     fun createChannels() {
         val system = context.getSystemService(NotificationManager::class.java)
@@ -71,12 +85,26 @@ class Notifier @Inject constructor(@ApplicationContext private val context: Cont
     @SuppressLint("MissingPermission")   // the service's own notification; without the permission the system just drops the update
     fun showConnection(state: ConnState) = manager.notify(ID_CONNECTION, connectionNotification(state))
 
+    /**
+     * Adds [events] to the thread. It buzzes again only if it last buzzed more than [ALERT_GAP_MS] ago: a reconnect after
+     * an hour in the background replays its backlog one event per frame, and thirty buzzes in a second would be one too
+     * many times twenty-nine. Within the gap the thread is updated silently.
+     */
     @SuppressLint("MissingPermission")   // areNotificationsEnabled() is checked first
     fun post(events: List<EventDto>) {
         if (events.isEmpty() || !manager.areNotificationsEnabled()) return
         val style = activeStyle() ?: NotificationCompat.MessagingStyle(me)
-        events.forEach { style.addMessage(lineFor(it), (it.at * 1000).toLong(), her) }
-        manager.notify(ID_CONVERSATION, conversation(style, alertAgain = true))
+        events.forEach { style.addMessage(lineFor(it), (it.at * 1000).toLong(), if (it.kind == EventKinds.NOTICE) notices else her) }
+        manager.notify(ID_CONVERSATION, conversation(style, alertAgain = alertNow()))
+    }
+
+    @Synchronized
+    private fun alertNow(): Boolean {
+        val now = clock()
+        val last = lastAlertAt
+        if (last != null && now - last <= ALERT_GAP_MS) return false
+        lastAlertAt = now
+        return true
     }
 
     /**

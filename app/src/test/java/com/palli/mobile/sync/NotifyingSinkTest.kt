@@ -34,8 +34,10 @@ class NotifyingSinkTest {
     private lateinit var notifier: Notifier
     private lateinit var sink: NotifyingSink
 
+    private var now = 100_000L
+
     @Before fun setUp() {
-        notifier = Notifier(context).also { it.createChannels() }
+        notifier = Notifier(context) { now }.also { it.createChannels() }
         sink = NotifyingSink(notifier, foreground)
     }
 
@@ -108,11 +110,13 @@ class NotifyingSinkTest {
 
     private fun onlyAlertsOnce(): Boolean = conversation()!!.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0
 
-    @Test fun `her messages alert each time, and your own reply never does`() = runTest {
+    @Test fun `her messages alert, your own reply never does, and she is heard again after it`() = runTest {
         sink.onNewEvents(listOf(hers(1, "one")))
         assertFalse(onlyAlertsOnce())
+        now += 1_000
         notifier.addMyReply("on my way")
         assertTrue(onlyAlertsOnce())                                // the reply update is silent
+        now += Notifier.ALERT_GAP_MS
         sink.onNewEvents(listOf(hers(2, "two")))
         assertFalse(onlyAlertsOnce())                               // and she is heard again after it
     }
